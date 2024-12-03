@@ -1,4 +1,4 @@
-eural networks have proven their utility in solving a wide range of complex
+Neural networks have proven their utility in solving a wide range of complex
 tasks. However, their ability to approximate and analyze nonlinear dynam-
 ics in real-world systems remains an open challenge. Recent approaches such
 as Dynamic Mode Decomposition (DMD) have shown promise in analyzing
