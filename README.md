@@ -1,18 +1,33 @@
-Neural networks have proven their utility in solving a wide range of complex
-tasks. However, their ability to approximate and analyze nonlinear dynam-
-ics in real-world systems remains an open challenge. Recent approaches such
-as Dynamic Mode Decomposition (DMD) have shown promise in analyzing
-high-dimensional data. By combining DMD with Autoencoders, a nonlinear
-dimensionality reduction technique, we propose a framework for approximat-
-ing nonlinear dynamics efficiently.
-DMD is a data-driven method that decomposes complex spatiotemporal
-data into dynamic modes, capturing the essential features of the underlying
-system dynamics. This method, particularly when extended with control,
-has found applications in fields such as fluid dynamics ?, neurobiology, and
-epidemiology ?. Similarly, Autoencoders excel at capturing nonlinear re-
-lationships in data and can enhance the DMD approach by providing an
-efficient latent space for dynamic mode extraction.
-The Koopman operator theory provides a linear framework for analyzing
-nonlinear dynamical systems. By applying DMD to the latent space learned
-by the Autoencoder, we can extract dynamic modes that approximate the
-system’s behavior over time.
+# Mandelbrot-DMD: Learning Fractal Structures with Autoencoders and Dynamic Mode Decomposition  
+
+This project explores **nonlinear dynamical systems** using **Dynamic Mode Decomposition (DMD) and Autoencoders**. It approximates the **Mandelbrot set** by learning the evolution of complex iterative systems.  
+
+## 📦 Installation  
+
+To set up the project, install the required dependencies using:  
+
+```sh
+pip install -r requirements.txt
+
+This command will install for you all the required packages/imports.
+
+```
+**Research and Methods**:
+
+This project builds on state-of-the-art methods:
+
+DMD for spectral analysis of complex systems
+Autoencoders for latent space compression
+Parametric and recurrent models for learning long-term behavior
+
+The models are based on works such as:
+
+Alford-Lago et al. (2022) - Deep Learning Enhanced DMD
+Korda & Mezić (2018) - Koopman-Based Model Predictive Control
+Otto & Rowley (2019) - Linearly-Recurrent Autoencoder
+
+**Future Work**
+1. More structured workflow
+2. Improved Visualisation
+3. Pretrained models for faster testing if necessary
+
