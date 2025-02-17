@@ -1,0 +1,19 @@
+# misc
+*~
+*.swp
+*.kate-swp
+*.bak
+
+# directories
+.ipynb_checkpoints
+__pycache__
+build*/
+_build*/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# generate files
+*.png
+*.npz
+*.zip
