@@ -1,28 +1,42 @@
+# --------------------------- IMPORTS ---------------------------
 import torch  # TORCH IMPORT
 from torch.utils.data import DataLoader, TensorDataset  # DATALOADER IMPORT
+import numpy as np  # NUMPY IMPORT
+from pathlib import Path  # PATH IMPORT
 
+from losses import make_reconstruction_loss  # LOSS SWITCH
 from encoder import Encoder  # ENCODER
 from decoder import Decoder  # DECODER
 from latent_dynamics import DMDDynamics  # DMD
 from classification import StabilityClassifier, classify_orbit  # CLASSIFIER
-from data_loader import load_matlab_matrix, normalize_data, split_sequences  # DATA UTILS
+
+from data_loader import load_task_npz_pair, normalize_data, make_dmd_pairs  # DATA UTILS (NPZ + NORMALISE + DMD PAIRS)
 from utils import to_tensor, get_device, save_model  # SYSTEM UTILS
-from validation import plot_latent_orbit, plot_reconstruction, plot_loss_curve, mse  # VALIDATION
+from validation import plot_latent_orbit, plot_reconstruction, plot_loss_curve, mse, save_mandelbrot_learned  # VALIDATION
+  # VALIDATION
 
 import os  # OS IMPORT
+
+
 os.makedirs("plots", exist_ok=True)  # CREATE PLOTS FOLDER
 os.makedirs("checkpoints", exist_ok=True)  # CREATE CHECKPOINT FOLDER
+
+print("CWD:", os.getcwd())  # PRINT CURRENT WORKING DIRECTORY --- LOST FILES --- PORCA MISERIA
 
 # --------------------------- DEVICE ---------------------------
 device = get_device()  # GET DEVICE
 print("DEVICE:", device)  # PRINT DEVICE
 
 # --------------------------- LOAD DATA ---------------------------
-X = load_matlab_matrix("matrices.mat", "X")  # LOAD MATLAB MATRIX
-X = normalize_data(X)  # NORMALIZE DATA
-X1, X2 = split_sequences(X)  # SPLIT INTO PAIRS
+DATA_DIR = Path(__file__).resolve().parent / "data-set"  # DATA FOLDER PATH (RELATIVE TO main.py)
 
-X_t = to_tensor(X, device)  # FULL DATA TO DEVICE
+X_emotion, X_rest = load_task_npz_pair(DATA_DIR, key=None, flatten=True)  # LOAD BOTH NPZ FILES (EMOTION + REST)
+
+X = np.concatenate([X_emotion, X_rest], axis=0)  # MERGE BOTH DATASETS INTO ONE BIG MATRIX
+X = normalize_data(X)  # NORMALISE DATA TO [0,1]
+
+X1, X2 = make_dmd_pairs(X)  # BUILD DMD SNAPSHOT PAIRS (Xk, Xk+1)
+X_t = to_tensor(X, device)  # CONVERT FULL DATA TO TORCH TENSOR ON DEVICE
 
 # --------------------------- DATA LOADER ---------------------------
 dataset = TensorDataset(X_t)  # WRAP DATASET
@@ -37,6 +51,8 @@ dec = Decoder(latent_dim, input_dim).to(device)  # DECODER TO DEVICE
 clf = StabilityClassifier(latent_dim).to(device)  # CLASSIFIER TO DEVICE
 
 dmd = DMDDynamics(device=device)  # DMD WITH DEVICE
+LOSS_MODE = 0  # 0=MSE, 1=MAE, 2=HUBER, 3=WEIGHTED_MSE
+loss_fn = make_reconstruction_loss(LOSS_MODE, beta=0.01, w_pow=1.0)  # BUILD LOSS
 
 # --------------------------- TRAIN AUTOENCODER ---------------------------
 optimizer = torch.optim.Adam(list(enc.parameters()) + list(dec.parameters()), lr=1e-3)  # OPTIMIZER
@@ -49,8 +65,8 @@ for e in range(epochs):  # EPOCH LOOP
     for (batch,) in loader:  # MINI-BATCH LOOP
         Z = enc(batch)  # ENCODE
         X_rec = dec(Z)  # DECODE
-        loss = mse(X_rec, batch)  # MSE LOSS
-
+        #loss = mse(X_rec, batch)  # MSE LOSS
+        loss = loss_fn(X_rec, batch)  # SWITCHED LOSS
         optimizer.zero_grad()  # ZERO GRAD
         loss.backward()  # BACKPROP
         optimizer.step()  # STEP OPT
@@ -61,6 +77,9 @@ for e in range(epochs):  # EPOCH LOOP
     losses.append(epoch_loss)  # SAVE LOSS
 
     print(f"EPOCH {e+1}/{epochs} LOSS={epoch_loss:.6f}")  # PRINT STATUS
+
+# --------------------------- LATENT CLOUD (FOR AUTO RANGE) ---------------------------
+Z_all = enc(to_tensor(X, device)).detach().cpu().numpy()  # ALL LATENTS (FOR AUTO RANGE)
 
 # --------------------------- SAVE MODELS ---------------------------
 save_model(enc, "checkpoints/encoder.pth")  # SAVE ENCODER
@@ -90,5 +109,14 @@ recon_sample = recon[0]  # FIRST RECON SAMPLE
 plot_reconstruction(true_sample, recon_sample, save_path="plots/reconstruction.png")  # SAVE RECON PLOT
 
 plot_loss_curve(losses, save_path="plots/loss.png")  # SAVE LOSS PLOT
+
+
+
+# --------------------------- LEARNED MANDELBROT ---------------------------
+save_mandelbrot_learned(dmd=dmd,  # PASS DMD
+                        classify_orbit_fn=classify_orbit,  # PASS CLASSIFIER
+                        Z_ref=Z_all,  # USE LATENT CLOUD TO SET GRID RANGE
+                        latent_dim=latent_dim,  # LATENT DIM
+                        save_path="plots/mandelbrot_learned.png")  # OUTPUT FILE
 
 print("DONE. ALL FILES SAVED.")  # FINISH MESSAGE
