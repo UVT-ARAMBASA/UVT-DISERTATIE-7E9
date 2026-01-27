@@ -10,7 +10,8 @@ from decoder import Decoder  # DECODER
 from latent_dynamics import DMDDynamics  # DMD
 from classification import StabilityClassifier, classify_orbit  # CLASSIFIER
 
-from data_loader import load_task_npz_pair, normalize_data, make_dmd_pairs  # DATA UTILS (NPZ + NORMALISE + DMD PAIRS)
+from data_loader import load_task_npz_pair, normalize_data, make_dmd_pairs, generate_state_trajectories
+  # DATA UTILS (NPZ + NORMALISE + DMD PAIRS)
 from utils import to_tensor, get_device, save_model  # SYSTEM UTILS
 from validation import plot_latent_orbit, plot_reconstruction, plot_loss_curve, mse, save_mandelbrot_learned  # VALIDATION
   # VALIDATION
@@ -30,13 +31,26 @@ print("DEVICE:", device)  # PRINT DEVICE
 # --------------------------- LOAD DATA ---------------------------
 DATA_DIR = Path(__file__).resolve().parent / "data-set"  # DATA FOLDER PATH (RELATIVE TO main.py)
 
-X_emotion, X_rest = load_task_npz_pair(DATA_DIR, key=None, flatten=True)  # LOAD BOTH NPZ FILES (EMOTION + REST)
+# LOAD A MATRICES (NOT DATA)
+A_emotion, A_rest = load_task_npz_pair(DATA_DIR, key=None, flatten=False)
 
-X = np.concatenate([X_emotion, X_rest], axis=0)  # MERGE BOTH DATASETS INTO ONE BIG MATRIX
-X = normalize_data(X)  # NORMALISE DATA TO [0,1]
+# GENERATE STATE DATA FROM DYNAMICS
+X_e, X1_e, X2_e = generate_state_trajectories(A_emotion, n_traj=500, x0_scale=1.0, noise_std=0.0)
+X_r, X1_r, X2_r = generate_state_trajectories(A_rest,    n_traj=500, x0_scale=1.0, noise_std=0.0)
 
-X1, X2 = make_dmd_pairs(X)  # BUILD DMD SNAPSHOT PAIRS (Xk, Xk+1)
-X_t = to_tensor(X, device)  # CONVERT FULL DATA TO TORCH TENSOR ON DEVICE
+# MERGE GENERATED STATE SNAPSHOTS
+X  = np.concatenate([X_e,  X_r],  axis=0)
+X1 = np.concatenate([X1_e, X1_r], axis=0)
+X2 = np.concatenate([X2_e, X2_r], axis=0)
+
+# NORMALISE WITH SAME SCALING (IMPORTANT)
+mn, mx = X.min(), X.max()
+X  = (X  - mn) / (mx - mn + 1e-12)
+X1 = (X1 - mn) / (mx - mn + 1e-12)
+X2 = (X2 - mn) / (mx - mn + 1e-12)
+
+X_t = to_tensor(X, device)
+
 
 # --------------------------- DATA LOADER ---------------------------
 dataset = TensorDataset(X_t)  # WRAP DATASET
@@ -109,8 +123,6 @@ recon_sample = recon[0]  # FIRST RECON SAMPLE
 plot_reconstruction(true_sample, recon_sample, save_path="plots/reconstruction.png")  # SAVE RECON PLOT
 
 plot_loss_curve(losses, save_path="plots/loss.png")  # SAVE LOSS PLOT
-
-
 
 # --------------------------- LEARNED MANDELBROT ---------------------------
 save_mandelbrot_learned(dmd=dmd,  # PASS DMD

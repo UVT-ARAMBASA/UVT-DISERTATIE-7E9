@@ -81,7 +81,8 @@ def save_mandelbrot_learned(dmd, classify_orbit_fn,  # DMD + CLASSIFIER
             orbit = dmd.predict(z0, steps=steps)  # PREDICT ORBIT
             label = classify_orbit_fn(orbit)  # CLASSIFY ORBIT
 
-            is_stable = (str(label).lower() == stable_token)  # CHECK STABLE LABEL
+           # is_stable = (str(label).lower() == stable_token)  # CHECK STABLE LABEL
+            is_stable = (label == 1)
             img[iy, ix] = 1 if is_stable else 0  # WRITE PIXEL
 
     # --------------------------- PLOT ---------------------------

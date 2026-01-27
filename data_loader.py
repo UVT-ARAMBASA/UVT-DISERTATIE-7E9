@@ -43,3 +43,43 @@ def normalize_data(x):
 def make_dmd_pairs(X: np.ndarray):
     # Classic DMD snapshot pairs: (x_k, x_{k+1})
     return X[:-1], X[1:]
+
+def generate_state_trajectories(A_seq: np.ndarray,
+                                n_traj: int = 500,
+                                x0_scale: float = 1.0,
+                                noise_std: float = 0.0):
+    """
+    A_seq: (T, n, n) time-varying matrices A_k
+    returns:
+      X:  (n_traj*T, n) stacked states
+      X1: (n_traj*(T-1), n)
+      X2: (n_traj*(T-1), n)
+    """
+    T, n, _ = A_seq.shape
+
+    X_list = []
+    X1_list = []
+    X2_list = []
+
+    for _ in range(n_traj):
+        x = (np.random.randn(n).astype(np.float32) * x0_scale)
+
+        traj = []
+        for k in range(T):
+            traj.append(x.copy())
+            x = A_seq[k] @ x
+            if noise_std > 0:
+                x = x + noise_std * np.random.randn(n).astype(np.float32)
+
+        traj = np.stack(traj, axis=0)          # (T, n)
+        X_list.append(traj)
+
+        X1_list.append(traj[:-1])
+        X2_list.append(traj[1:])
+
+    X  = np.concatenate(X_list,  axis=0)       # (n_traj*T, n)
+    X1 = np.concatenate(X1_list, axis=0)       # (n_traj*(T-1), n)
+    X2 = np.concatenate(X2_list, axis=0)       # (n_traj*(T-1), n)
+    return X, X1, X2
+
+
