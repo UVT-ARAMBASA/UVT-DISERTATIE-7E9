@@ -12,10 +12,17 @@ class DMDDynamics:  # DMD CLASS
         self.A = Z2_t.T @ torch.linalg.pinv(Z1_t.T)  # DMD FORMULA A = Z2 * Z1^+
         return self.A  # RETURN MATRIX
 
-    def predict(self, z0, steps=20):  # PREDICT LATENT TRAJECTORY
-        preds = []  # STORE RESULTS
-        z = z0.clone().to(self.device)  # COPY INITIAL Z TO DEVICE
-        for _ in range(steps):  # LOOP STEPS
-            z = self.A @ z  # APPLY DMD UPDATE
-            preds.append(z.clone())  # SAVE STEP
-        return torch.stack(preds)  # RETURN STACKED RESULT
+    def predict(self, z0, steps=20):  # PREDICT FUTURE STATES
+        preds = []  # STORE PREDICTIONS
+        z = z0.clone().to(self.device)  # CLONE AND MOVE TO DEVICE
+
+        for _ in range(steps):  # LOOP OVER STEPS
+            if z.ndim == 1:  # SINGLE VECTOR CASE
+                z = self.A @ z  # APPLY A TO VECTOR
+            else:  # BATCH CASE
+                z = z @ self.A.T  # APPLY A TO BATCH
+            preds.append(z.clone())  # SAVE STEP OUTPUT
+
+        return torch.stack(preds)  # STACK OVER TIME
+
+

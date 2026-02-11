@@ -1,96 +1,126 @@
-import matplotlib.pyplot as plt  # PLOTTING IMPORT
-import torch  # TORCH IMPORT
-import os  # OS IMPORT
+from __future__ import annotations
 
-def ensure_dir(path):  # ENSURE FOLDER EXISTS
-    os.makedirs(os.path.dirname(path), exist_ok=True)  # CREATE FOLDER IF NEEDED
+from pathlib import Path
+from typing import Callable
 
-def plot_latent_orbit(orbit, save_path=None):  # PLOT LATENT ORBIT NORM
-    ensure_dir(save_path)  # MAKE FOLDER
-    plt.figure(figsize=(6,4))  # NEW FIGURE
-    plt.plot(torch.norm(orbit, dim=1).cpu().numpy())  # PLOT ORBIT NORM
-    plt.title("LATENT ORBIT (NORM)")  # TITLE
-    if save_path:  # IF SAVE ENABLED
-        plt.savefig(save_path)  # SAVE FIG
-    plt.close()  # CLOSE
+import numpy as np
+import torch
 
-def plot_reconstruction(true_sample, recon_sample, save_path=None):  # PLOT RECON
-    ensure_dir(save_path)  # MAKE FOLDER
-    plt.figure(figsize=(6,4))  # FIG
-    plt.plot(true_sample.cpu().numpy(), label="TRUE")  # TRUE DATA
-    plt.plot(recon_sample.cpu().detach().numpy(), label="RECON")  # RECON DATA
-    plt.legend()  # LEGEND
-    plt.title("RECONSTRUCTION")  # TITLE
-    if save_path:  # SAVE IF REQUESTED
-        plt.savefig(save_path)  # SAVE FIG
-    plt.close()  # CLOSE
+from utils import axis, set_recommended_matplotlib
 
-def plot_loss_curve(losses, save_path=None):  # TRAIN LOSS CURVE
-    ensure_dir(save_path)  # MAKE FOLDER
-    plt.figure(figsize=(6,4))  # FIG
-    plt.plot(losses)  # PLOT LOSSES
-    plt.title("TRAINING LOSS")  # TITLE
-    if save_path:  # IF SAVE
-        plt.savefig(save_path)  # SAVE FIG
-    plt.close()  # CLOSE
 
-def mse(a, b):  # MSE LOSS
-    return torch.mean((a - b)**2)  # RETURN MSE
-# --------------------------- MANDELBROT (LEARNED LATENT STABILITY) ---------------------------
-def save_mandelbrot_learned(dmd, classify_orbit_fn,  # DMD + CLASSIFIER
-                            Z_ref=None,  # OPTIONAL: REFERENCE LATENTS FOR AUTO-RANGE
-                            latent_dim=8,  # LATENT SIZE
-                            save_path="plots/mandelbrot_learned.png",  # OUTPUT PATH
-                            width=500, height=500,  # IMAGE RESOLUTION
-                            steps=80,  # ORBIT LENGTH
-                            range_scale=2.5,  # HOW WIDE THE GRID IS (IN STD UNITS)
-                            stable_token="stable"):  # WHAT STRING MEANS "STABLE"
-    import numpy as np  # NUMPY IMPORT
-    import torch  # TORCH IMPORT
-    import matplotlib.pyplot as plt  # MATPLOTLIB IMPORT
-    import os  # OS IMPORT
+def save_dmd_matrices(dmd, save_dir: str | Path = "checkpoints") -> None:
+    """Export the fitted DMD matrix A in both .npy and .csv form."""
+    save_dir = Path(save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
 
-    os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)  # ENSURE FOLDER EXISTS
+    A = getattr(dmd, "A", None)
+    if A is None:
+        return
 
-    # --------------------------- AUTO RANGE FROM DATA ---------------------------
-    if Z_ref is not None:  # IF WE HAVE REFERENCE LATENT CLOUD
-        Z_ref = np.asarray(Z_ref)  # MAKE SURE NUMPY
-        mu = Z_ref.mean(axis=0)  # MEAN LATENT
-        sd = Z_ref.std(axis=0) + 1e-12  # STD LATENT
-        x_min = mu[0] - range_scale * sd[0]  # X MIN
-        x_max = mu[0] + range_scale * sd[0]  # X MAX
-        y_min = mu[1] - range_scale * sd[1]  # Y MIN
-        y_max = mu[1] + range_scale * sd[1]  # Y MAX
-        base = mu  # BASE POINT FOR OTHER DIMS
-    else:  # FALLBACK RANGE
-        x_min, x_max = -2.0, 2.0  # X RANGE
-        y_min, y_max = -2.0, 2.0  # Y RANGE
-        base = np.zeros(latent_dim, dtype=np.float32)  # BASE Z0
+    A_cpu = A.detach().cpu().numpy()
+    np.save(save_dir / "dmd_A.npy", A_cpu)
+    np.savetxt(save_dir / "dmd_A.csv", A_cpu, delimiter=",")
 
-    xs = np.linspace(x_min, x_max, width)  # X GRID
-    ys = np.linspace(y_min, y_max, height)  # Y GRID
-    img = np.zeros((height, width), dtype=np.uint8)  # OUTPUT IMAGE (0/1)
 
-    # --------------------------- GRID SCAN ---------------------------
-    for iy, y in enumerate(ys):  # Y LOOP
-        for ix, x in enumerate(xs):  # X LOOP
-            z0 = torch.tensor(base, dtype=torch.float32)  # START FROM BASE
-            z0[0] = float(x)  # SET z0[0]
-            z0[1] = float(y)  # SET z0[1]
+def plot_latent_orbit(orbit: torch.Tensor, save_path: str | Path) -> None:
+    """Visualise orbit as a heatmap (imshow), not a 1D line plot."""
+    set_recommended_matplotlib()
+    save_path = Path(save_path)
 
-            orbit = dmd.predict(z0, steps=steps)  # PREDICT ORBIT
-            label = classify_orbit_fn(orbit)  # CLASSIFY ORBIT
+    X = orbit.detach().cpu().numpy()
+    if X.ndim != 2:
+        X = X.reshape(X.shape[0], -1)
 
-           # is_stable = (str(label).lower() == stable_token)  # CHECK STABLE LABEL
-            is_stable = (label == 1)
-            img[iy, ix] = 1 if is_stable else 0  # WRITE PIXEL
+    with axis(save_path) as ax:
+        ax.imshow(X.T, aspect="auto", origin="lower")
+        ax.set_title("LATENT ORBIT (imshow)")
+        ax.set_xlabel("step")
+        ax.set_ylabel("latent dimension")
 
-    # --------------------------- PLOT ---------------------------
-    plt.figure(figsize=(6, 6))  # NEW FIGURE
-    plt.imshow(img, extent=[x_min, x_max, y_min, y_max], origin="lower")  # DRAW MAP
-    plt.title("Learned stability set (latent plane)")  # TITLE
-    plt.xlabel("z0[0]")  # X LABEL
-    plt.ylabel("z0[1]")  # Y LABEL
-    plt.tight_layout()  # TIGHT LAYOUT
-    plt.savefig(save_path, dpi=200)  # SAVE FIG
-    plt.close()  # CLOSE FIG
+
+def plot_reconstruction(true_sample: torch.Tensor, recon_sample: torch.Tensor, save_path: str | Path) -> None:
+    """Show TRUE / RECON / |DIFF| using imshow (fixes 'flat line' issue)."""
+    set_recommended_matplotlib()
+    save_path = Path(save_path)
+
+    t = true_sample.detach().cpu().numpy().reshape(1, -1)
+    r = recon_sample.detach().cpu().numpy().reshape(1, -1)
+    d = np.abs(t - r)
+    img = np.concatenate([t, r, d], axis=0)
+
+    with axis(save_path) as ax:
+        ax.imshow(img, aspect="auto", origin="lower")
+        ax.set_title("RECONSTRUCTION (TRUE / RECON / |DIFF|)")
+        ax.set_yticks([0, 1, 2])
+        ax.set_yticklabels(["TRUE", "RECON", "|DIFF|"])
+        ax.set_xlabel("feature index")
+
+
+def plot_loss_curve(losses: list[float], save_path: str | Path) -> None:
+    set_recommended_matplotlib()
+    save_path = Path(save_path)
+
+    with axis(save_path) as ax:
+        ax.plot(losses)
+        ax.set_title("TRAINING LOSS")
+        ax.set_xlabel("epoch")
+        ax.set_ylabel("loss")
+
+
+def save_mandelbrot_learned(
+    dmd,
+    classify_orbit_fn: Callable[[torch.Tensor], int],
+    *,
+    Z_ref: np.ndarray | None = None,
+    latent_dim: int = 8,
+    save_path: str | Path = "plots/mandelbrot_learned.png",
+    width: int = 500,
+    height: int = 500,
+    steps: int = 80,
+    range_scale: float = 2.5,
+    x_min: float | None = None,
+    x_max: float | None = None,
+    y_min: float | None = None,
+    y_max: float | None = None,
+) -> None:
+    """Scan (z0[0], z0[1]) and classify orbits using the learned model."""
+    set_recommended_matplotlib()
+    save_path = Path(save_path)
+
+    base = np.zeros(latent_dim, dtype=np.float32)
+
+    if (x_min is not None) and (x_max is not None) and (y_min is not None) and (y_max is not None):
+        pass
+    elif Z_ref is not None:
+        Z_ref = np.asarray(Z_ref)
+        mu = Z_ref.mean(axis=0)
+        sd = Z_ref.std(axis=0) + 1e-12
+        x_min = float(mu[0] - range_scale * sd[0])
+        x_max = float(mu[0] + range_scale * sd[0])
+        y_min = float(mu[1] - range_scale * sd[1])
+        y_max = float(mu[1] + range_scale * sd[1])
+        base = mu.astype(np.float32, copy=False)
+    else:
+        x_min, x_max = -2.0, 2.0
+        y_min, y_max = -2.0, 2.0
+
+    xs = np.linspace(float(x_min), float(x_max), width)
+    ys = np.linspace(float(y_min), float(y_max), height)
+    img = np.zeros((height, width), dtype=np.uint8)
+
+    for iy, y in enumerate(ys):
+        for ix, x in enumerate(xs):
+            z0 = torch.tensor(base, dtype=torch.float32)
+            z0[0] = float(x)
+            z0[1] = float(y)
+
+            orbit = dmd.predict(z0, steps=steps)
+            label = classify_orbit_fn(orbit)
+            img[iy, ix] = 1 if int(label) == 1 else 0
+
+    with axis(save_path) as ax:
+        ax.imshow(img, extent=[x_min, x_max, y_min, y_max], origin="lower", cmap="binary")
+        ax.set_title("Learned stability set (latent plane)")
+        ax.set_xlabel("z0[0]")
+        ax.set_ylabel("z0[1]")

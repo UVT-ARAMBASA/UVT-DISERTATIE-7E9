@@ -34,52 +34,63 @@ def load_task_npz_pair(data_dir: str | Path,
 
     return X_emotion, X_rest
 
-def normalize_data(x):
-    x = np.asarray(x, dtype=np.float32)
-    mn = x.min()
-    mx = x.max()
-    return (x - mn) / (mx - mn + 1e-12)
+def normalize_data(x):  # NORMALISE FN
+    x = np.asarray(x, dtype=np.float32)  # FP32 ARRAY
+    x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)  # FINITE ONLY
+    mn = float(np.min(x))  # MIN
+    mx = float(np.max(x))  # MAX
+    den = (mx - mn)  # DENOM
+    if (not np.isfinite(mn)) or (not np.isfinite(mx)):  # BAD RANGE
+        return np.zeros_like(x, dtype=np.float32)  # ZERO ARRAY
+    if abs(den) < 1e-12:  # NEAR CONSTANT
+        return np.zeros_like(x, dtype=np.float32)  # ZERO ARRAY
+    return (x - mn) / (den + 1e-12)  # [0,1] SCALE
+
+
 
 def make_dmd_pairs(X: np.ndarray):
     # Classic DMD snapshot pairs: (x_k, x_{k+1})
     return X[:-1], X[1:]
 
-def generate_state_trajectories(A_seq: np.ndarray,
-                                n_traj: int = 500,
-                                x0_scale: float = 1.0,
-                                noise_std: float = 0.0):
-    """
-    A_seq: (T, n, n) time-varying matrices A_k
-    returns:
-      X:  (n_traj*T, n) stacked states
-      X1: (n_traj*(T-1), n)
-      X2: (n_traj*(T-1), n)
-    """
-    T, n, _ = A_seq.shape
+def generate_state_trajectories(A_seq: np.ndarray,  # A SEQ IN
+                                n_traj: int = 500,  # TRAJ COUNT
+                                x0_scale: float = 1.0,  # INIT SCALE
+                                noise_std: float = 0.0,  # NOISE STD
+                                x_cap: float = 1e3):  # NORM CAP
+    T, n, _ = A_seq.shape  # SHAPES
+    A_seq = np.asarray(A_seq, dtype=np.float32)  # FP32 A SEQ
 
-    X_list = []
-    X1_list = []
-    X2_list = []
+    X_list = []  # X LIST
+    X1_list = []  # X1 LIST
+    X2_list = []  # X2 LIST
 
-    for _ in range(n_traj):
-        x = (np.random.randn(n).astype(np.float32) * x0_scale)
+    for _ in range(n_traj):  # TRAJ LOOP
+        x = (np.random.randn(n).astype(np.float32) * x0_scale)  # X0
+        traj = []  # TRAJ LIST
 
-        traj = []
-        for k in range(T):
-            traj.append(x.copy())
-            x = A_seq[k] @ x
-            if noise_std > 0:
-                x = x + noise_std * np.random.randn(n).astype(np.float32)
+        for k in range(T):  # TIME LOOP
+            x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)  # FINITE X
+            norm = float(np.linalg.norm(x))  # NORM
+            if norm > x_cap:  # CAP CHECK
+                x = (x / (norm + 1e-12)) * x_cap  # CAP SCALE
 
-        traj = np.stack(traj, axis=0)          # (T, n)
-        X_list.append(traj)
+            traj.append(x.copy())  # PUSH STATE
 
-        X1_list.append(traj[:-1])
-        X2_list.append(traj[1:])
+            x = A_seq[k] @ x  # STATE UPDATE
+            if noise_std > 0.0:  # NOISE FLAG
+                x = x + noise_std * np.random.randn(n).astype(np.float32)  # NOISE ADD
+#ELIMINATE
+        traj = np.stack(traj, axis=0).astype(np.float32)  # (T,N) TRAJ
+        traj = np.nan_to_num(traj, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)  # FINITE TRAJ
 
-    X  = np.concatenate(X_list,  axis=0)       # (n_traj*T, n)
-    X1 = np.concatenate(X1_list, axis=0)       # (n_traj*(T-1), n)
-    X2 = np.concatenate(X2_list, axis=0)       # (n_traj*(T-1), n)
-    return X, X1, X2
+        X_list.append(traj)  # X PUSH
+        X1_list.append(traj[:-1])  # X1 PUSH
+        X2_list.append(traj[1:])  # X2 PUSH
+
+    X = np.concatenate(X_list, axis=0).astype(np.float32)  # X STACK
+    X1 = np.concatenate(X1_list, axis=0).astype(np.float32)  # X1 STACK
+    X2 = np.concatenate(X2_list, axis=0).astype(np.float32)  # X2 STACK
+    return X, X1, X2  # OUTPUT
+
 
 
