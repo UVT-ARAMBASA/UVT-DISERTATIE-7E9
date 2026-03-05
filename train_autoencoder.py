@@ -46,6 +46,6 @@ def train_autoencoder(  # TRAIN AE
 
         s /= max(1, len(loader))  # MEAN
         losses.append(s)  # STORE
-        print(f"EPOCH {e+1}/{epochs} LOSS={s:.6f}")  # PRINT
+        print(f"EPOCH {e+1}/{epochs} LOSS={s:.6e}  ({s:.8f})")
 
     return enc, dec, losses  # RETURN
