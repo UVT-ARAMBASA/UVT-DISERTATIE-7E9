@@ -40,7 +40,7 @@ def _cap_to_escape(zr: np.ndarray, zi: np.ndarray, escape_r: float):  # CLAMP Z
 # =========================== RECONSTRUCT MANDELBROT ==========================
 @torch.no_grad()  # NO GRADS
 def reconstruct_mandelbrot(  # RECON SET
-    *,
+    *,  # KWONLY
     encoder,  # ENC
     decoder,  # DEC
     dmd,  # DMD
@@ -49,13 +49,16 @@ def reconstruct_mandelbrot(  # RECON SET
     max_iters: int,  # ITERS
     escape_r: float,  # ESCAPE R
     device: torch.device,  # DEVICE
+    state_dim: int,  # STATE DIM
+    feat_dim: int,  # FEATURE DIM
 ) -> np.ndarray:  # (grid_n,grid_n)
     P = int(C.shape[0])  # COUNT
     r2 = float(escape_r) * float(escape_r)  # R^2
 
-    # INIT x0=[zr,zi,cr,ci]  # AUG STATE
-    X = np.zeros((P, 4), dtype=np.float32)  # INIT
-    X[:, 2:4] = C.astype(np.float32)  # SET C
+    # INIT FULL FEATURE VECTOR  # MATCH TRAINING
+    X = np.zeros((P, feat_dim), dtype=np.float32)  # INIT
+    X[:, 2 * state_dim] = C[:, 0].astype(np.float32)  # SET CR
+    X[:, 2 * state_dim + 1] = C[:, 1].astype(np.float32)  # SET CI
 
     alive = np.ones((P,), dtype=bool)  # ACTIVE
     iters = np.zeros((P,), dtype=np.int32)  # ESC ITER
@@ -75,25 +78,27 @@ def reconstruct_mandelbrot(  # RECON SET
         xk1 = decoder(zk1)  # DEC
 
         # FORCE C CONSTANT  # KEEP C
-        xk1[:, 2:4] = C_t[idx]  # FIX
+        xk1[:, 2 * state_dim] = C_t[idx, 0]  # FIX CR
+        xk1[:, 2 * state_dim + 1] = C_t[idx, 1]  # FIX CI
 
         # CPU COPY (FOR ESCAPE TEST + SANITY)
         x_cpu = xk1.detach().cpu().numpy().astype(np.float32)
 
-        zr = x_cpu[:, 0]
-        zi = x_cpu[:, 1]
+        zr_all = x_cpu[:, 0:state_dim]  # ALL REAL COMPONENTS
+        zi_all = x_cpu[:, state_dim:2 * state_dim]  # ALL IMAG COMPONENTS
 
-        # ESCAPE TEST MUST USE RAW (BEFORE ANY CLAMP-TO-R)
-        mag2 = zr * zr + zi * zi
-        esc = mag2 > r2
+        # ESCAPE TEST ON MAX COMPONENT
+        comp_mag2 = zr_all * zr_all + zi_all * zi_all  # COMPONENTWISE |z_i|^2
+        max_mag2 = np.max(comp_mag2, axis=1)  # MAX COMPONENT |z_i|^2
+        esc = max_mag2 > r2  # ESCAPED MASK
 
-        # SANITISE ONLY NaN/Inf (DO NOT CLAMP TO ESCAPE R HERE)
-        bad = (~np.isfinite(zr)) | (~np.isfinite(zi))
-        if np.any(bad):
-            zr = np.where(bad, 0.0, zr).astype(np.float32, copy=False)
-            zi = np.where(bad, 0.0, zi).astype(np.float32, copy=False)
-            x_cpu[:, 0] = zr
-            x_cpu[:, 1] = zi
+        # SANITISE ONLY NaN/Inf
+        bad = (~np.isfinite(zr_all)) | (~np.isfinite(zi_all))  # BAD VALUES
+        if np.any(bad):  # FIX IF NEEDED
+            zr_all = np.where(np.isfinite(zr_all), zr_all, 0.0).astype(np.float32, copy=False)  # FIX RE
+            zi_all = np.where(np.isfinite(zi_all), zi_all, 0.0).astype(np.float32, copy=False)  # FIX IM
+            x_cpu[:, 0:state_dim] = zr_all  # WRITE ALL RE
+            x_cpu[:, state_dim:2 * state_dim] = zi_all  # WRITE ALL IM
 
         # PUSH BACK
         xk1 = to_tensor(x_cpu, device)
@@ -107,45 +112,6 @@ def reconstruct_mandelbrot(  # RECON SET
     iters[alive] = int(max_iters)  # STABLE
     return iters.reshape(int(grid_n), int(grid_n))  # IMAGE
 
-
-@torch.no_grad()  # NO GRADS
-def reconstruct_final_state(  # FINAL ITER ONLY
-    *,
-    encoder,
-    decoder,
-    dmd,
-    C: np.ndarray,  # (P,2)
-    max_iters: int,  # ITERS
-    escape_r: float,  # CLAMP R
-    device: torch.device,
-) -> np.ndarray:  # (P,4)
-    P = int(C.shape[0])  # COUNT
-
-    # INIT x0=[zr,zi,cr,ci]
-    X = np.zeros((P, 4), dtype=np.float32)
-    X[:, 2:4] = C.astype(np.float32)
-
-    X_t = to_tensor(X, device)
-    C_t = to_tensor(C.astype(np.float32), device)
-
-    for _k in range(int(max_iters)):  # FIXED STEPS (NO ESCAPE IMAGE)
-        zk = encoder(X_t)
-        zk1 = dmd.predict(zk, steps=1)[-1]
-        X_t = decoder(zk1)
-
-        # FORCE C CONSTANT
-        X_t[:, 2:4] = C_t
-
-        # CLAMP z TO ESCAPE R (UPPER BOUND)
-        x_cpu = X_t.detach().cpu().numpy().astype(np.float32)
-        zr = x_cpu[:, 0]
-        zi = x_cpu[:, 1]
-        zr, zi = _cap_to_escape(zr, zi, float(escape_r))
-        x_cpu[:, 0] = zr
-        x_cpu[:, 1] = zi
-        X_t = to_tensor(x_cpu, device)
-
-    return X_t.detach().cpu().numpy().astype(np.float32)  # (P,4)
 
 # =============================== IMAGE SAVE ==================================
 def save_escape_image(  # SAVE PNG
@@ -187,58 +153,67 @@ def save_and_show_plot(  # PLOT
 # ======================= RECONSTRUCT FINAL SNAPSHOT ==========================
 @torch.no_grad()  # NO GRADS
 def reconstruct_final_snapshot(  # FINAL STATE IMAGE
-    *,
+    *,  # KWONLY
     encoder,  # ENC
     decoder,  # DEC
-    dmd,  # DMD (USES READ MATRIX INSIDE)
+    dmd,  # DMD
     C: np.ndarray,  # (P,2)
     grid_n: int,  # RES
-    steps: int,  # HOW MANY ITERATIONS TO APPLY
-    escape_r: float,  # CLIP FOR NUMERIC SAFETY
+    steps: int,  # STEPS
+    escape_r: float,  # ESCAPE
     device: torch.device,  # DEVICE
-    batch_size: int = 200000,  # BATCH (GPU RAM)
-) -> np.ndarray:  # (grid_n,grid_n,2)  # FINAL (zr,zi)
+    batch_size: int = 200000,  # BATCH
+    state_dim: int,  # STATE DIM
+    feat_dim: int,  # FEATURE DIM
+) -> np.ndarray:  # (H,W,2)
     P = int(C.shape[0])  # COUNT
 
-    # INIT x0=[zr,zi,cr,ci]  # AUG STATE
-    X = np.zeros((P, 4), dtype=np.float32)  # INIT
-    X[:, 2:4] = C.astype(np.float32)  # SET C
+    X = np.zeros((P, feat_dim), dtype=np.float32)  # INIT FULL
+    X[:, 2 * state_dim] = C[:, 0].astype(np.float32)  # SET CR
+    X[:, 2 * state_dim + 1] = C[:, 1].astype(np.float32)  # SET CI
 
     C_t_all = to_tensor(C.astype(np.float32), device)  # CONST C
-    X_out = np.zeros((P, 2), dtype=np.float32)  # FINAL Z (CPU)
+    X_out = np.zeros((P, 2), dtype=np.float32)  # FINAL OUT
 
-    # BATCH LOOP
-    for i0 in range(0, P, int(batch_size)):  # LOOP BATCHES
-        i1 = min(P, i0 + int(batch_size))  # END
+    for i0 in range(0, P, int(batch_size)):  # BATCH LOOP
+        i1 = min(P, i0 + int(batch_size))  # BATCH END
         idx = slice(i0, i1)  # SLICE
 
         X_t = to_tensor(X[idx], device)  # TO TENSOR
         C_t = C_t_all[idx]  # CONST C
 
-        for _k in range(int(steps)):  # APPLY LEARNED DYNAMICS MANY TIMES
+        for _k in range(int(steps)):  # APPLY STEPS
             zk = encoder(X_t)  # ENC
-            zk1 = dmd.predict(zk, steps=1)[-1]  # 1 STEP USING "READ MATRIX"
+            zk1 = dmd.predict(zk, steps=1)[-1]  # ONE STEP
             X_t = decoder(zk1)  # DEC
 
-            # FORCE C CONSTANT  # KEEP C
-            X_t[:, 2:4] = C_t  # FIX
+            X_t[:, 2 * state_dim] = C_t[:, 0]  # FIX CR
+            X_t[:, 2 * state_dim + 1] = C_t[:, 1]  # FIX CI
 
-            # CLAMP Z (UPPER BOUND)  # MATCH YOUR "CAP TO ESCAPE R"
             x_cpu = X_t.detach().cpu().numpy().astype(np.float32)  # CPU
-            zr = x_cpu[:, 0]  # RE
-            zi = x_cpu[:, 1]  # IM
-            zr, zi = _cap_to_escape(zr, zi, float(escape_r))  # CLAMP
-            x_cpu[:, 0] = zr  # WRITE
-            x_cpu[:, 1] = zi  # WRITE
+            zr_all = x_cpu[:, 0:state_dim]  # ALL RE
+            zi_all = x_cpu[:, state_dim:2 * state_dim]  # ALL IM
+
+            comp_mag2 = zr_all * zr_all + zi_all * zi_all  # COMPONENTWISE |z_i|^2
+            comp_mag = np.sqrt(np.maximum(comp_mag2, 1e-30)).astype(np.float32)  # COMPONENTWISE |z_i|
+            bad = (~np.isfinite(comp_mag)) | (comp_mag > float(escape_r))  # BAD MASK
+
+            if np.any(bad):  # FIX IF NEEDED
+                safe_mag = np.where((comp_mag > 0.0) & np.isfinite(comp_mag), comp_mag, 1.0).astype(
+                    np.float32)  # SAFE MAG
+                scale = (float(escape_r) / safe_mag).astype(np.float32)  # SCALE
+                zr_all = np.where(bad, zr_all * scale, zr_all).astype(np.float32)  # CLAMP RE
+                zi_all = np.where(bad, zi_all * scale, zi_all).astype(np.float32)  # CLAMP IM
+                x_cpu[:, 0:state_dim] = zr_all  # WRITE ALL RE
+                x_cpu[:, state_dim:2 * state_dim] = zi_all  # WRITE ALL IM
+
             X_t = to_tensor(x_cpu, device)  # BACK
 
-        # STORE FINAL Z
-        x_final = X_t.detach().cpu().numpy().astype(np.float32)  # CPU
-        X_out[idx, 0] = x_final[:, 0]  # zr
-        X_out[idx, 1] = x_final[:, 1]  # zi
+        x_final = X_t.detach().cpu().numpy().astype(np.float32)  # CPU FINAL
+        X_out[idx, 0] = x_final[:, 0]  # SAVE RE
+        X_out[idx, 1] = x_final[:, state_dim]  # SAVE IM
 
-    return X_out.reshape(int(grid_n), int(grid_n), 2)  # (H,W,2)
-
+    return X_out.reshape(int(grid_n), int(grid_n), 2)  # RESHAPE
 # ======================= SAVE FINAL SNAPSHOT IMAGE ===========================
 def save_final_snapshot_image(  # SAVE FINAL PNG
     Z_final: np.ndarray,  # (H,W,2)

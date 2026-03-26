@@ -10,12 +10,11 @@ import torch  # TORCH
 import defines as D  # DEFINES
 
 from utils import get_device, save_model, to_tensor  # YOUR UTILS
-from prepare_training_data import build_mandelbrot_training_data, build_from_A_sequences, save_training_npz  # DATA
+from prepare_training_data import build_mandelbrot_training_data, build_matrix_c_grid_training_data, save_training_npz  # DATA
 
 from train_autoencoder import train_autoencoder  # TRAIN AE
 from apply_dmd import fit_dmd_on_arrays  # DMD FIT
-from mandelbrot_reconstruct import build_c_grid, reconstruct_mandelbrot, save_escape_image, save_and_show_plot  # RECON
-
+from mandelbrot_reconstruct import build_c_grid, reconstruct_mandelbrot, save_escape_image, save_and_show_plot, reconstruct_final_snapshot, save_final_snapshot_image  # RECON + FINAL SNAPSHOT
 # ============================== DEVICE PICKER ================================
 def pick_device() -> torch.device:  # SELECT DEVICE
     if D.USE_CUDA_IF_AVAILABLE and torch.cuda.is_available():  # CUDA AVAILABLE
@@ -34,15 +33,21 @@ def main() -> None:  # ENTRYPOINT
     Path(D.OUTPUT_DIR).mkdir(parents=True, exist_ok=True)  # MAKE DIR
 
     # ----------------------- 1) BUILD TRAINING DATA -------------------------
-    if D.USE_A_SEQUENCES:  # USE MATLAB A-SEQS
-        td = build_from_A_sequences(  # BUILD DATA
-            data_dir=D.A_DATA_DIR,  # NPZ FOLDER
-            n_traj=500,  # COUNT
-            x0_scale=1.0,  # SCALE
-            noise_std=0.0,  # NOISE - 0.0 NO NOISE
-            flatten=False,  # KEEP (T,N,N)
+    if D.USE_A_SEQUENCES:  # USE MATRIX-A GRID
+        td = build_matrix_c_grid_training_data(  # BUILD DATA
+            data_dir=D.A_DATA_DIR,  # DATA DIR
+            source="emotion",  # WHICH FILE
+            index=0,  # WHICH MATRIX
+            c_re_min=D.C_RE_MIN,  # RE MIN
+            c_re_max=D.C_RE_MAX,  # RE MAX
+            c_im_min=D.C_IM_MIN,  # IM MIN
+            c_im_max=D.C_IM_MAX,  # IM MAX
+            c_re_n=D.TRAIN_C_RE_N,  # RE RES
+            c_im_n=D.TRAIN_C_IM_N,  # IM RES
+            max_iters=D.TRAIN_MAX_ITERS,  # ITERS
+            escape_r=D.ESCAPE_R,  # ESCAPE
         )  # END
-    else:  # USE MANDELBROT SYNTHETIC (GRID)
+    else:  # USE CLASSIC MANDELBROT
         td = build_mandelbrot_training_data(  # BUILD DATA
             c_re_min=D.C_RE_MIN,  # RE MIN
             c_re_max=D.C_RE_MAX,  # RE MAX
@@ -50,22 +55,39 @@ def main() -> None:  # ENTRYPOINT
             c_im_max=D.C_IM_MAX,  # IM MAX
             c_re_n=D.TRAIN_C_RE_N,  # TRAIN C RE RES
             c_im_n=D.TRAIN_C_IM_N,  # TRAIN C IM RES
-            max_iters=D.TRAIN_MAX_ITERS,  # TRAIN ITERS (T)
-            escape_r=D.ESCAPE_R,  # ESCAPE (ALSO CLAMP UPPER BOUND)
-            seed=D.TRAIN_SEED,  # KEEP (NOT USED)
+            max_iters=D.TRAIN_MAX_ITERS,  # TRAIN ITERS
+            escape_r=D.ESCAPE_R,  # ESCAPE
+            seed=D.TRAIN_SEED,  # KEEP
         )  # END
 
     # ----------------------------- VISUALISE DATA ----------------------------
     from visualise_training_data import (  # VIS TOOLS
         dump_training_text,  # TXT HEAD
         dump_training_csv,  # CSV FULL
-        render_z_scatter_png,  # PNG SCATTER
         dump_one_orbit,  # ORBIT (NOTE: WITH GRID THIS IS JUST "FIRST ROWS")
     )  # END
 
     dump_training_text(td.X, "out/training_head.txt", n_rows=200)  # TXT
     dump_one_orbit(td.X, "out/orbit_first.txt", steps=120)  # ORBIT
-    render_z_scatter_png(td.X, "out/z_scatter.png", escape_r=D.ESCAPE_R, max_points=150000)  # PNG
+
+    feat_dim = int(td.X_grid.shape[-1])  # FEATURE DIM
+    d = (feat_dim - 2) // 2  # STATE DIM
+    r2 = float(D.ESCAPE_R) * float(D.ESCAPE_R)  # R^2
+#ada
+    zr = td.X_grid[-1, :, :, 0:d]  # FINAL RE ALL COMPONENTS
+    zi = td.X_grid[-1, :, :, d:2 * d]  # FINAL IM ALL COMPONENTS
+    comp_mag2 = zr * zr + zi * zi  # COMPONENTWISE |z_i|^2
+    max_mag2 = np.max(comp_mag2, axis=-1)  # MAX COMPONENT |z_i|^2
+    fractal = max_mag2 < r2  # BOUNDED MASK
+
+    try:
+        from PIL import Image  # PNG SAVE
+
+        img = (fractal.astype(np.uint8) * 255)  # BOOL TO IMAGE
+        Image.fromarray(img, mode="L").save("out/final_iteration_mask.png")  # SAVE FINAL MASK
+        print("[OK] WROTE out/final_iteration_mask.png")  # LOG
+    except Exception as e:
+        print("[WARN] FAILED TO SAVE out/final_iteration_mask.png:", e)  # LOG FAIL
 
     # OPTIONAL FULL CSV  # HUGE FILE
     # dump_training_csv(td.X, "out/training_full.csv")  # CSV
@@ -112,7 +134,9 @@ def main() -> None:  # ENTRYPOINT
         max_iters=D.MAX_ITERS,  # ITERS
         escape_r=D.ESCAPE_R,  # ESCAPE
         device=device,  # DEVICE
-    )
+        state_dim=d,  # STATE DIM
+        feat_dim=feat_dim,  # FEATURE DIM
+    )  # RECON
 
     # ------------------- 4b) FINAL SNAPSHOT (LEARNED) ------------------------
     Z_final = reconstruct_final_snapshot(  # FINAL
@@ -125,7 +149,9 @@ def main() -> None:  # ENTRYPOINT
         escape_r=D.ESCAPE_R,  # CLAMP
         device=device,  # DEVICE
         batch_size=200000,  # BATCH
-    )
+        state_dim=d,  # STATE DIM
+        feat_dim=feat_dim,  # FEATURE DIM
+    )  # FINAL
 
     p3 = save_final_snapshot_image(  # SAVE
         Z_final,

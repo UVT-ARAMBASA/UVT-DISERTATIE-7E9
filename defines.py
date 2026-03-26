@@ -13,10 +13,10 @@ OUTPUT_IMAGE_PLOT_PNG = str(PROJECT_DIR / "outputs" / "mandelbrot_reconstructed_
 
 # ============================== MANDELBROT BOX ==============================
 # ZOOM OUT 4X  # KEEP GRID_N
-C_RE_MIN = -0.03
-C_RE_MAX =  0.03
-C_IM_MIN = -0.03
-C_IM_MAX =  0.03
+C_RE_MIN = -2.0  # WIDER REAL RANGE
+C_RE_MAX =  1.0  # WIDER REAL RANGE
+C_IM_MIN = -1.5  # WIDER IMAG RANGE
+C_IM_MAX =  1.5  # WIDER IMAG RANGE
 
 GRID_N = 512  # IMAGE RESOLUTION (GRID_N x GRID_N)
 MAX_ITERS = 80  # ITERATIONS PER C
@@ -45,5 +45,5 @@ SHOW_PLOT = True  # DISPLAY FIGURE
 SAVE_PLOT = True  # SAVE PLOT PNG
 SAVE_IMAGE = True  # SAVE PIL PNG
 
-USE_A_SEQUENCES = False  # TOGGLE DATA SOURCE
+USE_A_SEQUENCES = True  # TOGGLE DATA SOURCE
 A_DATA_DIR = str(PROJECT_DIR / "data")  # FOLDER WITH task-emotion.npz + task-rest.npz

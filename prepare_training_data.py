@@ -11,7 +11,9 @@ from typing import Optional  # OPTIONAL TYPE
 from data_loader import (  # LOCAL DATA UTILS
     load_task_npz_pair,  # LOAD TASK/REST NPZ
     generate_state_trajectories,  # TRAJ GEN
+    load_one_A_matrix,  # LOAD ONE A
 )  # END IMPORTS
+
 
 
 
@@ -176,6 +178,7 @@ def build_mandelbrot_training_data(  # BUILD MANDELBROT (GRID)
 
     # ------------------------------ FLATTEN ---------------------------------
     X = X_tp4.reshape(T * P, 4).astype(np.float32)  # (T*P,4)
+    #flat everyting si problem
     X1 = X_tp4[:-1].reshape((T - 1) * P, 4).astype(np.float32)  # ((T-1)*P,4)
     X2 = X_tp4[1:].reshape((T - 1) * P, 4).astype(np.float32)  # ((T-1)*P,4)
 
@@ -233,3 +236,91 @@ def save_training_npz(out_path: str | Path, td: TrainingData) -> str:  # SAVE
             meta=np.array([td.meta], dtype=object),
         )
     return str(out_path)  # RETURN
+
+
+def build_matrix_c_grid_training_data(  # BUILD GRID DATA WITH A
+    data_dir: str | Path,  # DATA FOLDER
+    *,  # KWONLY
+    source: str = "emotion",  # WHICH FILE
+    index: int = 0,  # WHICH MATRIX
+    c_re_min: float,  # RE MIN
+    c_re_max: float,  # RE MAX
+    c_im_min: float,  # IM MIN
+    c_im_max: float,  # IM MAX
+    c_re_n: int = 256,  # RE RES
+    c_im_n: int = 256,  # IM RES
+    max_iters: int = 40,  # ITER COUNT
+    escape_r: float = 2.0,  # ESCAPE RADIUS
+) -> TrainingData:  # RETURN DATA
+    data_dir = Path(data_dir)  # PATH
+    A = load_one_A_matrix(data_dir, source=source, index=index)  # LOAD A
+    A = np.asarray(A, dtype=np.float32)  # FP32
+
+    d = int(A.shape[0])  # STATE DIM
+    T = int(max_iters)  # ITERS
+    Nr = int(c_re_n)  # RE RES
+    Ni = int(c_im_n)  # IM RES
+    r = float(escape_r)  # R
+    r2 = r * r  # R2
+
+    cr = np.linspace(float(c_re_min), float(c_re_max), Nr, dtype=np.float32)  # RE GRID
+    ci = np.linspace(float(c_im_min), float(c_im_max), Ni, dtype=np.float32)  # IM GRID
+    C_re, C_im = np.meshgrid(cr, ci, indexing="xy")  # GRID
+    P = int(C_re.size)  # POINT COUNT
+
+    cr_flat = C_re.reshape(-1).astype(np.float32, copy=False)  # FLAT RE
+    ci_flat = C_im.reshape(-1).astype(np.float32, copy=False)  # FLAT IM
+    c_flat = (cr_flat + 1j * ci_flat).astype(np.complex64)  # COMPLEX C
+
+    z = np.zeros((P, d), dtype=np.complex64)  # Z0
+    z[:, 0] = c_flat  # SEED FIRST COMP
+
+    feat_dim = 2 * d + 2  # [RE_d, IM_d, CR, CI]
+    X_tp = np.zeros((T, P, feat_dim), dtype=np.float32)  # STORE ALL
+
+    for t in range(T):  # TIME LOOP
+        Az = (z @ A.T).astype(np.complex64)  # APPLY A
+        z = (Az * Az).astype(np.complex64)  # NONLINEAR STEP
+        z[:, 0] = (z[:, 0] + c_flat).astype(np.complex64)  # ADD C FIRST ONLY
+
+        mag2 = (z.real * z.real + z.imag * z.imag).astype(np.float32)  # |Z|^2 PER COMP
+        bad = (~np.isfinite(mag2)) | (mag2 > r2)  # BAD MASK
+        if np.any(bad):  # CLAMP
+            mag = np.sqrt(np.maximum(mag2, 1e-30)).astype(np.float32)  # |Z|
+            scale = (r / mag).astype(np.float32)  # SCALE
+            z_real = np.where(bad, z.real * scale, z.real).astype(np.float32)  # CLAMP RE
+            z_imag = np.where(bad, z.imag * scale, z.imag).astype(np.float32)  # CLAMP IM
+            z = (z_real + 1j * z_imag).astype(np.complex64)  # WRITE BACK
+
+        X_tp[t, :, 0:d] = z.real.astype(np.float32)  # SAVE RE
+        X_tp[t, :, d:2 * d] = z.imag.astype(np.float32)  # SAVE IM
+        X_tp[t, :, 2 * d] = cr_flat  # SAVE CR
+        X_tp[t, :, 2 * d + 1] = ci_flat  # SAVE CI
+
+    X_grid = X_tp.reshape(T, Ni, Nr, feat_dim).astype(np.float32, copy=False)  # GRID VIEW
+    X = X_tp.reshape(T * P, feat_dim).astype(np.float32)  # FLAT X
+    X1 = X_tp[:-1].reshape((T - 1) * P, feat_dim).astype(np.float32)  # PAIRS L
+    X2 = X_tp[1:].reshape((T - 1) * P, feat_dim).astype(np.float32)  # PAIRS R
+
+    X = _sanitize_finite(X, "X")  # FIX
+    X1 = _sanitize_finite(X1, "X1")  # FIX
+    X2 = _sanitize_finite(X2, "X2")  # FIX
+
+    return TrainingData(  # PACK
+        X=X,  # STORE
+        X1=X1,  # STORE
+        X2=X2,  # STORE
+        meta={  # META
+            "mode": "matrix_c_grid",  # TAG
+            "source": str(source),  # WHICH FILE
+            "index": int(index),  # WHICH MATRIX
+            "state_dim": int(d),  # DIM
+            "bbox": (float(c_re_min), float(c_re_max), float(c_im_min), float(c_im_max)),  # BOX
+            "c_re_n": int(Nr),  # SAVE
+            "c_im_n": int(Ni),  # SAVE
+            "P": int(P),  # SAVE
+            "max_iters": int(T),  # SAVE
+            "escape_r": float(r),  # SAVE
+        },
+        X_grid=X_grid,  # STORE GRID
+    )

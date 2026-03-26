@@ -133,3 +133,18 @@ def generate_state_trajectories(  # GEN TRAJ
     X2_all = np.concatenate(X2_all, axis=0).astype(np.float32)  # FLAT
 
     return X_all, X1_all, X2_all  # RETURN
+
+def load_one_A_matrix(  # LOAD ONE MATRIX
+    data_dir: str | Path,  # DATA FOLDER
+    source: str = "emotion",  # WHICH FILE
+    index: int = 0,  # WHICH MATRIX
+):
+    data_dir = Path(data_dir)  # PATH
+    if str(source).lower() == "rest":  # PICK REST
+        A_all = load_npz_array(data_dir / "task-rest.npz")  # LOAD REST
+    else:  # PICK EMOTION
+        A_all = load_npz_array(data_dir / "task-emotion.npz")  # LOAD EMOTION
+
+    A_all = np.asarray(A_all, dtype=np.float32)  # FP32
+    A = A_all[int(index)]  # PICK ONE
+    return A.astype(np.float32)  # RETURN MATRIX
