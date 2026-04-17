@@ -148,3 +148,30 @@ def load_one_A_matrix(  # LOAD ONE MATRIX
     A_all = np.asarray(A_all, dtype=np.float32)  # FP32
     A = A_all[int(index)]  # PICK ONE
     return A.astype(np.float32)  # RETURN MATRIX
+
+def load_all_A_matrices(  # LOAD ALL MATRICES
+    data_dir: str | Path,  # DATA FOLDER
+    source: str = "emotion",  # WHICH FILE
+) -> np.ndarray:
+    data_dir = Path(data_dir)  # PATH
+    if str(source).lower() == "rest":  # PICK REST
+        A_all = load_npz_array(data_dir / "task-rest.npz")  # LOAD REST
+    else:  # PICK EMOTION
+        A_all = load_npz_array(data_dir / "task-emotion.npz")  # LOAD EMOTION
+
+    A_all = np.asarray(A_all, dtype=np.float32)  # FP32
+    return A_all  # RETURN ALL
+
+def split_explicit_matrix_indices(  # EXPLICIT TRAIN/TEST SPLIT
+    total_count: int,  # HOW MANY MATRICES
+    train_count: int,  # HOW MANY TRAIN
+    test_count: int,  # HOW MANY TEST
+    seed: int = 0,  # REPRO
+) -> tuple[np.ndarray, np.ndarray]:
+    idx = np.arange(int(total_count), dtype=np.int64)  # ALL INDICES
+    rng = np.random.default_rng(int(seed))  # RNG
+    rng.shuffle(idx)  # SHUFFLE
+
+    train_idx = np.sort(idx[:int(train_count)])  # TRAIN
+    test_idx = np.sort(idx[int(train_count):int(train_count) + int(test_count)])  # TEST
+    return train_idx, test_idx  # RETURN

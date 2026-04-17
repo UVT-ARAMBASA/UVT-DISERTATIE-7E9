@@ -9,11 +9,10 @@ from torch.utils.data import DataLoader, TensorDataset  # DATALOADER
 from encoder import Encoder  # YOUR ENCODER
 from decoder import Decoder  # YOUR DECODER
 from losses import make_reconstruction_loss  # YOUR LOSS
-from utils import to_tensor  # YOUR TENSOR HELPER
 
 # ================================ TRAIN LOOP =================================
 def train_autoencoder(  # TRAIN AE
-    X: np.ndarray,  # TRAIN ARRAY
+    X: np.ndarray | list[np.ndarray],  # TRAIN ARRAY OR LIST OF ARRAYS
     *,
     latent_dim: int,  # LATENT SIZE
     epochs: int,  # EPOCHS
@@ -21,10 +20,15 @@ def train_autoencoder(  # TRAIN AE
     lr: float,  # LR
     device: torch.device,  # DEVICE
 ) -> tuple[Encoder, Decoder, list[float]]:  # RETURNS MODELS + LOSSES
-    X_t = to_tensor(X, device)  # TO TENSOR
-    loader = DataLoader(TensorDataset(X_t), batch_size=batch_size, shuffle=True, drop_last=True)  # LOADER
+    if isinstance(X, np.ndarray):  # SINGLE ARRAY
+        X_list = [X]  # WRAP
+    else:  # MANY ARRAYS
+        X_list = list(X)  # COPY
 
-    in_dim = int(X.shape[1])  # INPUT DIM
+    if len(X_list) == 0:  # EMPTY
+        raise ValueError("X_list IS EMPTY")  # ERROR
+
+    in_dim = int(X_list[0].shape[1])  # INPUT DIM
     enc = Encoder(in_dim, latent_dim).to(device)  # BUILD ENCODER
     dec = Decoder(latent_dim, in_dim).to(device)  # BUILD DECODER
 
@@ -34,18 +38,37 @@ def train_autoencoder(  # TRAIN AE
     losses: list[float] = []  # LOSS LIST
 
     for e in range(epochs):  # EPOCH LOOP
-        s = 0.0  # SUM
-        for (b,) in loader:  # BATCH LOOP
-            z = enc(b)  # ENCODE
-            xh = dec(z)  # DECODE
-            loss = loss_fn(xh, b)  # LOSS
-            opt.zero_grad()  # ZERO
-            loss.backward()  # BACKPROP
-            opt.step()  # STEP
-            s += float(loss.detach().cpu().item())  # ACCUM
+        rng = np.random.default_rng(e)  # RNG
+        order = rng.permutation(len(X_list))  # SHUFFLE DATA BLOCKS
 
-        s /= max(1, len(loader))  # MEAN
+        s = 0.0  # LOSS SUM
+        n_batches = 0  # BATCH COUNT
+
+        for block_id in order:  # LOOP BLOCKS
+            X_block = np.asarray(X_list[int(block_id)], dtype=np.float32)  # ONE BLOCK
+            X_cpu = torch.tensor(X_block, dtype=torch.float32)  # KEEP ON CPU
+            loader = DataLoader(  # LOADER
+                TensorDataset(X_cpu),
+                batch_size=batch_size,
+                shuffle=True,
+                drop_last=False,
+            )
+
+            for (b_cpu,) in loader:  # BATCH LOOP
+                b = b_cpu.to(device)  # MOVE BATCH ONLY
+                z = enc(b)  # ENCODE
+                xh = dec(z)  # DECODE
+                loss = loss_fn(xh, b)  # LOSS
+
+                opt.zero_grad()  # ZERO
+                loss.backward()  # BACKPROP
+                opt.step()  # STEP
+
+                s += float(loss.detach().cpu().item())  # ACCUM
+                n_batches += 1  # COUNT
+
+        s /= max(1, n_batches)  # MEAN
         losses.append(s)  # STORE
-        print(f"EPOCH {e+1}/{epochs} LOSS={s:.6e}  ({s:.8f})")
+        print(f"EPOCH {e+1}/{epochs} LOSS={s:.6e}  ({s:.8f})")  # LOG
 
     return enc, dec, losses  # RETURN

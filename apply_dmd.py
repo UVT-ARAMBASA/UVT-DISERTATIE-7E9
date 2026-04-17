@@ -29,3 +29,14 @@ def export_dmd_matrix(dmd: DMDDynamics, out_npy: str, out_csv: str | None = None
     np.save(out_npy, A_cpu)  # SAVE NPY
     if out_csv is not None:  # OPTIONAL CSV
         np.savetxt(out_csv, A_cpu, delimiter=",")  # SAVE CSV
+
+def fit_dmd_from_latent_covariances(  # FIT FROM STREAMED COVS
+    G: np.ndarray,  # Z1^T Z1
+    H: np.ndarray,  # Z1^T Z2
+    *,
+    device: torch.device,  # DEVICE
+) -> DMDDynamics:
+    A_t = np.linalg.pinv(G) @ H  # SOLVE Z2 = Z1 A^T
+    dmd = DMDDynamics(device=device)  # INIT
+    dmd.A = torch.tensor(A_t.T, dtype=torch.float32, device=device)  # STORE A
+    return dmd  # RETURN

@@ -12,6 +12,7 @@ from data_loader import (  # LOCAL DATA UTILS
     load_task_npz_pair,  # LOAD TASK/REST NPZ
     generate_state_trajectories,  # TRAJ GEN
     load_one_A_matrix,  # LOAD ONE A
+    load_all_A_matrices,  # LOAD ALL A
 )  # END IMPORTS
 
 
@@ -238,11 +239,9 @@ def save_training_npz(out_path: str | Path, td: TrainingData) -> str:  # SAVE
     return str(out_path)  # RETURN
 
 
-def build_matrix_c_grid_training_data(  # BUILD GRID DATA WITH A
-    data_dir: str | Path,  # DATA FOLDER
+def _build_matrix_c_grid_training_data_from_A(  # BUILD GRID DATA WITH GIVEN A
+    A: np.ndarray,  # ONE MATRIX
     *,  # KWONLY
-    source: str = "emotion",  # WHICH FILE
-    index: int = 0,  # WHICH MATRIX
     c_re_min: float,  # RE MIN
     c_re_max: float,  # RE MAX
     c_im_min: float,  # IM MIN
@@ -251,9 +250,9 @@ def build_matrix_c_grid_training_data(  # BUILD GRID DATA WITH A
     c_im_n: int = 256,  # IM RES
     max_iters: int = 40,  # ITER COUNT
     escape_r: float = 2.0,  # ESCAPE RADIUS
-) -> TrainingData:  # RETURN DATA
-    data_dir = Path(data_dir)  # PATH
-    A = load_one_A_matrix(data_dir, source=source, index=index)  # LOAD A
+    matrix_index: int | None = None,  # OPTIONAL INDEX
+    matrix_source: str | None = None,  # OPTIONAL SOURCE
+) -> TrainingData:
     A = np.asarray(A, dtype=np.float32)  # FP32
 
     d = int(A.shape[0])  # STATE DIM
@@ -297,30 +296,94 @@ def build_matrix_c_grid_training_data(  # BUILD GRID DATA WITH A
         X_tp[t, :, 2 * d] = cr_flat  # SAVE CR
         X_tp[t, :, 2 * d + 1] = ci_flat  # SAVE CI
 
-    X_grid = X_tp.reshape(T, Ni, Nr, feat_dim).astype(np.float32, copy=False)  # GRID VIEW
-    X = X_tp.reshape(T * P, feat_dim).astype(np.float32)  # FLAT X
-    X1 = X_tp[:-1].reshape((T - 1) * P, feat_dim).astype(np.float32)  # PAIRS L
-    X2 = X_tp[1:].reshape((T - 1) * P, feat_dim).astype(np.float32)  # PAIRS R
+    X_grid = X_tp.reshape(T, Ni, Nr, feat_dim).astype(np.float32, copy=False)  # BIG GRID
+    X = X_tp.reshape(T * P, feat_dim).astype(np.float32)  # FLAT
+    X1 = X_tp[:-1].reshape((T - 1) * P, feat_dim).astype(np.float32)  # LEFT
+    X2 = X_tp[1:].reshape((T - 1) * P, feat_dim).astype(np.float32)  # RIGHT
 
     X = _sanitize_finite(X, "X")  # FIX
     X1 = _sanitize_finite(X1, "X1")  # FIX
     X2 = _sanitize_finite(X2, "X2")  # FIX
 
-    return TrainingData(  # PACK
-        X=X,  # STORE
-        X1=X1,  # STORE
-        X2=X2,  # STORE
-        meta={  # META
+    return TrainingData(
+        X=X,  # FULL
+        X1=X1,  # LEFT
+        X2=X2,  # RIGHT
+        meta={
             "mode": "matrix_c_grid",  # TAG
-            "source": str(source),  # WHICH FILE
-            "index": int(index),  # WHICH MATRIX
-            "state_dim": int(d),  # DIM
-            "bbox": (float(c_re_min), float(c_re_max), float(c_im_min), float(c_im_max)),  # BOX
+            "matrix_index": None if matrix_index is None else int(matrix_index),  # SAVE
+            "matrix_source": matrix_source,  # SAVE
+            "state_dim": int(d),  # SAVE
+            "max_iters": int(T),  # SAVE
             "c_re_n": int(Nr),  # SAVE
             "c_im_n": int(Ni),  # SAVE
-            "P": int(P),  # SAVE
-            "max_iters": int(T),  # SAVE
             "escape_r": float(r),  # SAVE
         },
-        X_grid=X_grid,  # STORE GRID
+        X_grid=X_grid,  # GRID
     )
+
+def build_matrix_c_grid_training_data(  # BUILD GRID DATA WITH A
+    data_dir: str | Path,  # DATA FOLDER
+    *,  # KWONLY
+    source: str = "emotion",  # WHICH FILE
+    index: int = 0,  # WHICH MATRIX
+    c_re_min: float,  # RE MIN
+    c_re_max: float,  # RE MAX
+    c_im_min: float,  # IM MIN
+    c_im_max: float,  # IM MAX
+    c_re_n: int = 256,  # RE RES
+    c_im_n: int = 256,  # IM RES
+    max_iters: int = 40,  # ITER COUNT
+    escape_r: float = 2.0,  # ESCAPE RADIUS
+) -> TrainingData:  # RETURN DATA
+    data_dir = Path(data_dir)  # PATH
+    A = load_one_A_matrix(data_dir, source=source, index=index)  # LOAD A
+    return _build_matrix_c_grid_training_data_from_A(  # BUILD
+        A,
+        c_re_min=c_re_min,
+        c_re_max=c_re_max,
+        c_im_min=c_im_min,
+        c_im_max=c_im_max,
+        c_re_n=c_re_n,
+        c_im_n=c_im_n,
+        max_iters=max_iters,
+        escape_r=escape_r,
+        matrix_index=index,
+        matrix_source=source,
+    )
+
+def build_matrix_c_grid_training_data_many_matrices(  # MANY MATRICES
+    data_dir: str | Path,  # DATA FOLDER
+    *,  # KWONLY
+    source: str = "emotion",  # WHICH FILE
+    indices: list[int] | np.ndarray,  # WHICH MATRICES
+    c_re_min: float,  # RE MIN
+    c_re_max: float,  # RE MAX
+    c_im_min: float,  # IM MIN
+    c_im_max: float,  # IM MAX
+    c_re_n: int = 8,  # SMALL RE RES
+    c_im_n: int = 8,  # SMALL IM RES
+    max_iters: int = 40,  # ITER COUNT
+    escape_r: float = 2.0,  # ESCAPE RADIUS
+) -> list[TrainingData]:
+    data_dir = Path(data_dir)  # PATH
+    A_all = load_all_A_matrices(data_dir, source=source)  # LOAD ALL
+    out: list[TrainingData] = []  # STORE
+
+    for idx in np.asarray(indices, dtype=np.int64):  # LOOP MATRICES
+        td = _build_matrix_c_grid_training_data_from_A(  # BUILD ONE
+            A_all[int(idx)],
+            c_re_min=c_re_min,
+            c_re_max=c_re_max,
+            c_im_min=c_im_min,
+            c_im_max=c_im_max,
+            c_re_n=c_re_n,
+            c_im_n=c_im_n,
+            max_iters=max_iters,
+            escape_r=escape_r,
+            matrix_index=int(idx),
+            matrix_source=source,
+        )
+        out.append(td)  # STORE
+
+    return out  # RETURN LIST
