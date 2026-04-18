@@ -26,6 +26,9 @@ from eval_matrix_dmd_ae import (  # EVAL
     save_predicted_final_mask,
     save_ground_truth_escape_iters,
 )
+
+from mandelbrot_reconstruct import reconstruct_final_snapshot, save_final_snapshot_image  # FINAL SNAPSHOT
+
 # ============================== DEVICE PICKER ================================
 def pick_device() -> torch.device:  # SELECT DEVICE
     if D.USE_CUDA_IF_AVAILABLE and torch.cuda.is_available():  # CUDA AVAILABLE
@@ -145,6 +148,32 @@ def main() -> None:  # ENTRYPOINT
         D.ESCAPE_R,  # ESCAPE
         "out/result/single-matrix/pred_final_mask.png",  # PATH
         scale=64,  # UPSCALE
+    )
+
+    feat_dim = int(td_single.X_grid.shape[-1])  # FEAT DIM
+    d = (feat_dim - 2) // 2  # STATE DIM
+    T = int(td_single.X_grid.shape[0])  # STEPS
+    C_single = td_single.X_grid[0, :, :, 2 * d:2 * d + 2].reshape(-1, 2).astype(np.float32)  # C GRID
+
+    Z_single_final = reconstruct_final_snapshot(  # FINAL SNAPSHOT
+        encoder=enc_single,  # ENC
+        decoder=dec_single,  # DEC
+        dmd=dmd_single,  # DMD
+        C=C_single,  # GRID
+        grid_n=D.SINGLE_MATRIX_C_RE_N,  # RES
+        steps=T,  # STEPS
+        escape_r=D.ESCAPE_R,  # ESCAPE
+        device=device,  # DEVICE
+        batch_size=50000,  # BATCH
+        state_dim=d,  # STATE DIM
+        feat_dim=feat_dim,  # FEAT DIM
+    )
+
+    save_final_snapshot_image(  # SAVE FINAL ITER IMAGE
+        Z_single_final,  # FINAL STATE
+        escape_r=D.ESCAPE_R,  # SCALE
+        out_png="out/result/single-matrix/pred_final_snapshot_mag.png",  # PATH
+        mode="mask",  # MASK
     )
 
     ae_single_metrics = autoencoder_reconstruction_metrics(enc_single, dec_single, td_single.X, device)  # AE METRICS

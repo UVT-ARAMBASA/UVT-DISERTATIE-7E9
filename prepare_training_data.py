@@ -272,7 +272,7 @@ def _build_matrix_c_grid_training_data_from_A(  # BUILD GRID DATA WITH GIVEN A
     c_flat = (cr_flat + 1j * ci_flat).astype(np.complex64)  # COMPLEX C
 
     z = np.zeros((P, d), dtype=np.complex64)  # Z0
-    z[:, 0] = c_flat  # SEED FIRST COMP
+    #z[:] = c_flat[:, None]  # SEED ALL COMPONENTS
 
     feat_dim = 2 * d + 2  # [RE_d, IM_d, CR, CI]
     X_tp = np.zeros((T, P, feat_dim), dtype=np.float32)  # STORE ALL
@@ -280,7 +280,7 @@ def _build_matrix_c_grid_training_data_from_A(  # BUILD GRID DATA WITH GIVEN A
     for t in range(T):  # TIME LOOP
         Az = (z @ A.T).astype(np.complex64)  # APPLY A
         z = (Az * Az).astype(np.complex64)  # NONLINEAR STEP
-        z[:, 0] = (z[:, 0] + c_flat).astype(np.complex64)  # ADD C FIRST ONLY
+        z = (z + c_flat[:, None]).astype(np.complex64)  # ADD C TO ALL COMPONENTS
 
         mag2 = (z.real * z.real + z.imag * z.imag).astype(np.float32)  # |Z|^2 PER COMP
         bad = (~np.isfinite(mag2)) | (mag2 > r2)  # BAD MASK

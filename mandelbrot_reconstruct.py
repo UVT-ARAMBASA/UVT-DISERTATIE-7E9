@@ -56,7 +56,9 @@ def reconstruct_mandelbrot(  # RECON SET
     r2 = float(escape_r) * float(escape_r)  # R^2
 
     # INIT FULL FEATURE VECTOR  # MATCH TRAINING
-    X = np.zeros((P, feat_dim), dtype=np.float32)  # INIT
+    X = np.zeros((P, feat_dim), dtype=np.float32)  # INIT FULL
+    X[:, 0:state_dim] = C[:, 0:1].astype(np.float32)  # SET Z0 RE IN ALL COMPONENTS
+    X[:, state_dim:2 * state_dim] = C[:, 1:2].astype(np.float32)  # SET Z0 IM IN ALL COMPONENTS
     X[:, 2 * state_dim] = C[:, 0].astype(np.float32)  # SET CR
     X[:, 2 * state_dim + 1] = C[:, 1].astype(np.float32)  # SET CI
 
@@ -173,7 +175,7 @@ def reconstruct_final_snapshot(  # FINAL STATE IMAGE
     X[:, 2 * state_dim + 1] = C[:, 1].astype(np.float32)  # SET CI
 
     C_t_all = to_tensor(C.astype(np.float32), device)  # CONST C
-    X_out = np.zeros((P, 2), dtype=np.float32)  # FINAL OUT
+    X_out = np.zeros((P, 2 * state_dim), dtype=np.float32)  # FINAL OUT ALL COMPONENTS
 
     for i0 in range(0, P, int(batch_size)):  # BATCH LOOP
         i1 = min(P, i0 + int(batch_size))  # BATCH END
@@ -209,35 +211,39 @@ def reconstruct_final_snapshot(  # FINAL STATE IMAGE
 
             X_t = to_tensor(x_cpu, device)  # BACK
 
-        x_final = X_t.detach().cpu().numpy().astype(np.float32)  # CPU FINAL
-        X_out[idx, 0] = x_final[:, 0]  # SAVE RE
-        X_out[idx, 1] = x_final[:, state_dim]  # SAVE IM
+            x_final = X_t.detach().cpu().numpy().astype(np.float32)  # CPU FINAL
+            X_out[idx, 0:state_dim] = x_final[:, 0:state_dim]  # SAVE ALL RE
+            X_out[idx, state_dim:2 * state_dim] = x_final[:, state_dim:2 * state_dim]  # SAVE ALL IM
 
-    return X_out.reshape(int(grid_n), int(grid_n), 2)  # RESHAPE
+    return X_out.reshape(int(grid_n), int(grid_n), 2 * state_dim)  # RESHAPE
+
 # ======================= SAVE FINAL SNAPSHOT IMAGE ===========================
 def save_final_snapshot_image(  # SAVE FINAL PNG
-    Z_final: np.ndarray,  # (H,W,2)
+    Z_final: np.ndarray,  # (H,W,2*D)
     *,
     escape_r: float,  # SCALE
     out_png: str | Path,  # PATH
-    mode: str = "mag",  # "mag" OR "angle"
+    mode: str = "mag",  # "mag" OR "angle" OR "mask"
 ) -> str:
     out_png = Path(out_png)  # PATH
     out_png.parent.mkdir(parents=True, exist_ok=True)  # MKDIR
 
-    zr = Z_final[..., 0].astype(np.float32, copy=False)  # RE
-    zi = Z_final[..., 1].astype(np.float32, copy=False)  # IM
+    state_dim = int(Z_final.shape[-1] // 2)  # STATE DIM
+    zr = Z_final[..., 0:state_dim].astype(np.float32, copy=False)  # ALL RE
+    zi = Z_final[..., state_dim:2 * state_dim].astype(np.float32, copy=False)  # ALL IM
+    comp_mag2 = zr * zr + zi * zi  # ALL MAG2
+    max_mag = np.sqrt(np.max(comp_mag2, axis=-1)).astype(np.float32)  # MAX MAG OVER COMPONENTS
 
-    if str(mode).lower() == "angle":  # PHASE IMAGE
-        ang = np.arctan2(zi, zr).astype(np.float32)  # [-pi,pi]
+    if str(mode).lower() == "mask":  # BOUNDED MASK
+        img = ((max_mag < float(escape_r)).astype(np.uint8) * 255)  # BW
+    elif str(mode).lower() == "angle":  # PHASE OF FIRST COMPONENT
+        ang = np.arctan2(zi[..., 0], zr[..., 0]).astype(np.float32)  # [-pi,pi]
         norm = (ang + np.pi) / (2.0 * np.pi)  # [0,1]
         img = (255.0 * norm).clip(0, 255).astype(np.uint8)  # 8BIT
-    else:  # MAG IMAGE (DEFAULT)
-        mag = np.sqrt(zr * zr + zi * zi).astype(np.float32)  # |Z|
-        mag = np.where(mag > float(escape_r), float(escape_r), mag).astype(np.float32)  # CLIP
-        norm = mag / float(escape_r)  # [0,1] FOR DISPLAY ONLY
+    else:  # MAG IMAGE
+        mag = np.minimum(max_mag, float(escape_r)).astype(np.float32)  # CLIP
+        norm = mag / float(escape_r)  # [0,1]
         img = (255.0 * norm).clip(0, 255).astype(np.uint8)  # 8BIT
 
-    im = Image.fromarray(img, mode="L")  # GRAY
-    im.save(out_png)  # SAVE
+    Image.fromarray(img, mode="L").save(out_png)  # SAVE
     return str(out_png)  # RETURN

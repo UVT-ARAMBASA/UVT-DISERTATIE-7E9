@@ -133,10 +133,11 @@ def save_predicted_final_mask(  # MODEL FINAL MASK
         feat_dim=feat_dim,  # FEAT DIM
     )
 
-    zr = Z_final[..., 0].astype(np.float32, copy=False)  # RE FIRST
-    zi = Z_final[..., 1].astype(np.float32, copy=False)  # IM FIRST
-    mag2 = zr * zr + zi * zi  # MAG2 FIRST
-    mask = mag2 < float(escape_r) * float(escape_r)  # BOUNDED
+    zr = Z_final[..., 0:d].astype(np.float32, copy=False)  # ALL RE
+    zi = Z_final[..., d:2 * d].astype(np.float32, copy=False)  # ALL IM
+    comp_mag2 = zr * zr + zi * zi  # ALL MAG2
+    max_mag2 = np.max(comp_mag2, axis=-1)  # MAX OVER COMPONENTS
+    mask = max_mag2 < float(escape_r) * float(escape_r)  # BOUNDED
 
     img = (mask.astype(np.uint8) * 255)  # BW
     pil_img = Image.fromarray(img, mode="L")  # MAKE IMAGE
@@ -161,7 +162,7 @@ def save_ground_truth_escape_iters(td, escape_r: float, out_png: str | Path) -> 
     zi = td.X_grid[:, :, :, d:2 * d]  # ALL IM
     comp_mag2 = zr * zr + zi * zi  # MAG2
     max_mag2 = np.max(comp_mag2, axis=-1)  # MAX OVER COMPONENTS
-    escaped = max_mag2 > r2  # ESCAPED
+    escaped = max_mag2 >= r2  # ESCAPED AFTER CLAMP TOO
 
     first_escape = np.argmax(escaped, axis=0).astype(np.int32) + 1  # FIRST ESC
     never_escaped = ~np.any(escaped, axis=0)  # NEVER ESC
