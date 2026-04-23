@@ -27,9 +27,9 @@ def load_model(model: torch.nn.Module, path: str | os.PathLike[str], device: tor
     return model
 
 
-# ---------------------------------------------------------------------------
-# Matplotlib helpers (mirrors the style used in `quadratic-network.py`)
-# ---------------------------------------------------------------------------
+# #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=#  #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=#
+#  Matplotlib helpers
+#  #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=# #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=#
 
 
 def set_recommended_matplotlib() -> None:

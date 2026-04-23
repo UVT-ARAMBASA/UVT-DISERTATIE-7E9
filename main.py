@@ -1,6 +1,6 @@
 from __future__ import annotations  # ENABLE MODERN TYPE HINTS
 
-# ================================= IMPORTS ==================================
+# #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=# IMPORTS #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=#
 import os  # OS
 from pathlib import Path  # PATH
 import numpy as np  # NUMPY
@@ -29,7 +29,7 @@ from eval_matrix_dmd_ae import (  # EVAL
 
 from mandelbrot_reconstruct import reconstruct_final_snapshot, save_final_snapshot_image  # FINAL SNAPSHOT
 
-# ============================== DEVICE PICKER ================================
+# #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=#= DEVICE PICKER #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=#
 def pick_device() -> torch.device:  # SELECT DEVICE
     if D.USE_CUDA_IF_AVAILABLE and torch.cuda.is_available():  # CUDA AVAILABLE
         return torch.device("cuda")  # GPU
@@ -69,7 +69,7 @@ def mean_metric_dict(metric_list: list[dict]) -> dict:  # MEAN OVER LIST
     return out  # RETURN
 
 
-# =================================== MAIN ===================================
+# #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=# MAIN #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=#
 def main() -> None:  # ENTRYPOINT
     device = pick_device()  # DEVICE
     print("DEVICE:", device)  # PRINT
@@ -83,7 +83,7 @@ def main() -> None:  # ENTRYPOINT
     Path("out/result/single-matrix").mkdir(parents=True, exist_ok=True)  # MAKE DIR
     Path("out/result/multi-matrix").mkdir(parents=True, exist_ok=True)  # MAKE DIR
 
-    # ===================== PART 1: SINGLE MATRIX SANITY CHECK =====================
+    # #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=# PART 1: SINGLE MATRIX SANITY CHECK #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=#
     print("\n================ SINGLE MATRIX CHECK ================\n")  # HEADER
 
     td_single = build_matrix_c_grid_training_data(  # BUILD ONE MATRIX DATA
@@ -117,14 +117,17 @@ def main() -> None:  # ENTRYPOINT
         scale=64,  # UPSCALE
     )
 
-    enc_single, dec_single, losses_single = train_autoencoder(  # TRAIN AE
-        td_single.X,  # DATA
+    #  #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=# TRAIN AE DMD PIPELINE -BEGIN  #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=#
+    enc_single, dec_single, losses_single = train_autoencoder(  # TRAIN AE + DMD
+        td_single.X1,  # LEFT
+        td_single.X2,  # RIGHT
         latent_dim=D.LATENT_DIM,  # LATENT
         epochs=D.AE_EPOCHS,  # EPOCHS
         batch_size=D.AE_BATCH_SIZE,  # BATCH
         lr=D.AE_LR,  # LR
         device=device,  # DEVICE
     )
+    #  #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=# TRAIN AE DMD PIPELINE -END    #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=#
 
     save_loss_curve(  # LOSS PLOT
         losses_single,  # LOSSES
@@ -181,7 +184,7 @@ def main() -> None:  # ENTRYPOINT
     print_metric_block("SINGLE MATRIX AE", ae_single_metrics)  # PRINT
     print_metric_block("SINGLE MATRIX DMD", dmd_single_metrics)  # PRINT
 
-    # ===================== PART 2: MULTI MATRIX 40 / 8 ===========================
+    # #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=# PART 2: MULTI MATRIX 40 / 8 #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=#
     print("\n================ MULTI MATRIX 40 / 8 ================\n")  # HEADER
 
     A_all = load_all_A_matrices(D.A_DATA_DIR, source=D.MULTI_MATRIX_SOURCE)  # LOAD ALL
@@ -222,14 +225,17 @@ def main() -> None:  # ENTRYPOINT
     for td in td_train_list:  # FREE BIG GRIDS
         td.X_grid = None  # NOT NEEDED FOR TRAINING
 
-    enc_multi, dec_multi, losses_multi = train_autoencoder(  # TRAIN AE ON 40 MATRICES
-        [td.X for td in td_train_list],  # STREAMED DATA
+    #  #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=# TRAIN AE DMD PIPELINE -BEGIN  #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=#
+    enc_multi, dec_multi, losses_multi = train_autoencoder(  # TRAIN AE + DMD ON 40 MATRICES
+        [td.X1 for td in td_train_list],  # LEFT DATA
+        [td.X2 for td in td_train_list],  # RIGHT DATA
         latent_dim=D.LATENT_DIM,  # LATENT
         epochs=D.AE_EPOCHS,  # EPOCHS
         batch_size=D.AE_BATCH_SIZE,  # BATCH
         lr=D.AE_LR,  # LR
         device=device,  # DEVICE
     )
+    #  #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=# TRAIN AE DMD PIPELINE -END    #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=#
 
     save_loss_curve(  # LOSS PLOT
         losses_multi,  # LOSSES
