@@ -55,63 +55,67 @@ def reconstruct_mandelbrot(  # RECON SET
     P = int(C.shape[0])  # COUNT
     r2 = float(escape_r) * float(escape_r)  # R^2
 
-    # INIT FULL FEATURE VECTOR  # MATCH TRAINING
+    # IMPORTANT:
+    # TRAINING STORES x1..xT, NOT x0
+    # WITH z0 = 0, THE FIRST STORED STATE IS x1 = c REPEATED IN ALL COMPONENTS
     X = np.zeros((P, feat_dim), dtype=np.float32)  # INIT FULL
-    X[:, 0:state_dim] = C[:, 0:1].astype(np.float32)  # SET Z0 RE IN ALL COMPONENTS
-    X[:, state_dim:2 * state_dim] = C[:, 1:2].astype(np.float32)  # SET Z0 IM IN ALL COMPONENTS
-    X[:, 2 * state_dim] = C[:, 0].astype(np.float32)  # SET CR
-    X[:, 2 * state_dim + 1] = C[:, 1].astype(np.float32)  # SET CI
+    X[:, 0:state_dim] = C[:, 0:1].astype(np.float32)  # x1 RE IN ALL COMPONENTS
+    X[:, state_dim:2 * state_dim] = C[:, 1:2].astype(np.float32)  # x1 IM IN ALL COMPONENTS
+    X[:, 2 * state_dim] = C[:, 0].astype(np.float32)  # CR
+    X[:, 2 * state_dim + 1] = C[:, 1].astype(np.float32)  # CI
 
     alive = np.ones((P,), dtype=bool)  # ACTIVE
-    iters = np.zeros((P,), dtype=np.int32)  # ESC ITER
+    iters = np.zeros((P,), dtype=np.int32)  # FIRST ESCAPE ITER
 
-    X_t = to_tensor(X, device)  # TO TENSOR
+    # TEST x1 FIRST, BECAUSE GROUND TRUTH COUNTS ESCAPE FROM THE FIRST STORED STATE
+    zr0 = X[:, 0:state_dim]  # RE
+    zi0 = X[:, state_dim:2 * state_dim]  # IM
+    comp_mag2_0 = zr0 * zr0 + zi0 * zi0  # |z_i|^2
+    max_mag2_0 = np.max(comp_mag2_0, axis=1)  # MAX OVER COMPONENTS
+    esc0 = max_mag2_0 > r2  # ESCAPED AT ITER 1
+    iters[esc0] = 1  # MARK ITER 1
+    alive[esc0] = False  # DEACTIVATE
+
+    X_t = to_tensor(X, device)  # TO DEVICE
     C_t = to_tensor(C.astype(np.float32), device)  # CONST C
 
-    for k in range(1, int(max_iters) + 1):  # LOOP
+    for k in range(2, int(max_iters) + 1):  # CONTINUE FROM x2..xT
         if not alive.any():  # DONE
             break  # STOP
 
-        idx = np.where(alive)[0]  # IDX
-        xk = X_t[idx]  # ACTIVE
+        idx = np.where(alive)[0]  # ACTIVE IDX
+        xk = X_t[idx]  # ACTIVE STATES
 
         zk = encoder(xk)  # ENC
-        zk1 = dmd.predict(zk, steps=1)[-1]  # 1 STEP
+        zk1 = dmd.predict(zk, steps=1)[-1]  # ONE STEP
         xk1 = decoder(zk1)  # DEC
 
-        # FORCE C CONSTANT  # KEEP C
-        xk1[:, 2 * state_dim] = C_t[idx, 0]  # FIX CR
-        xk1[:, 2 * state_dim + 1] = C_t[idx, 1]  # FIX CI
+        xk1[:, 2 * state_dim] = C_t[idx, 0]  # KEEP CR EXACT
+        xk1[:, 2 * state_dim + 1] = C_t[idx, 1]  # KEEP CI EXACT
 
-        # CPU COPY (FOR ESCAPE TEST + SANITY)
-        x_cpu = xk1.detach().cpu().numpy().astype(np.float32)
+        x_cpu = xk1.detach().cpu().numpy().astype(np.float32)  # CPU
+        zr_all = x_cpu[:, 0:state_dim]  # RE
+        zi_all = x_cpu[:, state_dim:2 * state_dim]  # IM
 
-        zr_all = x_cpu[:, 0:state_dim]  # ALL REAL COMPONENTS
-        zi_all = x_cpu[:, state_dim:2 * state_dim]  # ALL IMAG COMPONENTS
+        comp_mag2 = zr_all * zr_all + zi_all * zi_all  # |z_i|^2
+        max_mag2 = np.max(comp_mag2, axis=1)  # MAX OVER COMPONENTS
+        esc = max_mag2 > r2  # ESCAPED NOW
 
-        # ESCAPE TEST ON MAX COMPONENT
-        comp_mag2 = zr_all * zr_all + zi_all * zi_all  # COMPONENTWISE |z_i|^2
-        max_mag2 = np.max(comp_mag2, axis=1)  # MAX COMPONENT |z_i|^2
-        esc = max_mag2 > r2  # ESCAPED MASK
-
-        # SANITISE ONLY NaN/Inf
-        bad = (~np.isfinite(zr_all)) | (~np.isfinite(zi_all))  # BAD VALUES
-        if np.any(bad):  # FIX IF NEEDED
+        bad = (~np.isfinite(zr_all)) | (~np.isfinite(zi_all))  # NaN/Inf
+        if np.any(bad):  # FIX
             zr_all = np.where(np.isfinite(zr_all), zr_all, 0.0).astype(np.float32, copy=False)  # FIX RE
             zi_all = np.where(np.isfinite(zi_all), zi_all, 0.0).astype(np.float32, copy=False)  # FIX IM
-            x_cpu[:, 0:state_dim] = zr_all  # WRITE ALL RE
-            x_cpu[:, state_dim:2 * state_dim] = zi_all  # WRITE ALL IM
+            x_cpu[:, 0:state_dim] = zr_all  # WRITE RE
+            x_cpu[:, state_dim:2 * state_dim] = zi_all  # WRITE IM
 
-        # PUSH BACK
-        xk1 = to_tensor(x_cpu, device)
-        X_t[idx] = xk1
+        xk1 = to_tensor(x_cpu, device)  # BACK
+        X_t[idx] = xk1  # WRITE BACK
 
-        # MARK ESCAPED POINTS
-        escaped_idx = idx[esc]
-        iters[escaped_idx] = k
-        alive[escaped_idx] = False
+        escaped_idx = idx[esc]  # GLOBAL IDX
+        iters[escaped_idx] = k  # FIRST ESCAPE ITER
+        alive[escaped_idx] = False  # DEACTIVATE
 
-    iters[alive] = int(max_iters)  # STABLE
+    iters[alive] = int(max_iters)  # NEVER ESCAPED
     return iters.reshape(int(grid_n), int(grid_n))  # IMAGE
 
 
@@ -167,53 +171,60 @@ def reconstruct_final_snapshot(  # FINAL STATE IMAGE
     batch_size: int = 200000,  # BATCH
     state_dim: int,  # STATE DIM
     feat_dim: int,  # FEATURE DIM
-) -> np.ndarray:  # (H,W,2)
+) -> np.ndarray:  # (H,W,2*D)
     P = int(C.shape[0])  # COUNT
 
+    # IMPORTANT:
+    # TRAINING STORES x1, x2, ..., xT  # NOT x0
+    # x1 CORRESPONDS TO z1 = c (REPEATED IN ALL COMPONENTS) WHEN z0 = 0
     X = np.zeros((P, feat_dim), dtype=np.float32)  # INIT FULL
-    X[:, 2 * state_dim] = C[:, 0].astype(np.float32)  # SET CR
-    X[:, 2 * state_dim + 1] = C[:, 1].astype(np.float32)  # SET CI
+    X[:, 0:state_dim] = C[:, 0:1].astype(np.float32)  # x1 REAL PART IN ALL COMPONENTS
+    X[:, state_dim:2 * state_dim] = C[:, 1:2].astype(np.float32)  # x1 IMAG PART IN ALL COMPONENTS
+    X[:, 2 * state_dim] = C[:, 0].astype(np.float32)  # FIX CR
+    X[:, 2 * state_dim + 1] = C[:, 1].astype(np.float32)  # FIX CI
+
+    # IF TRAINING HAS T STORED STATES x1..xT, THEN FROM x1 WE ONLY NEED T-1 ROLLOUT STEPS
+    n_roll = max(int(steps) - 1, 0)  # CORRECT STEP COUNT
 
     C_t_all = to_tensor(C.astype(np.float32), device)  # CONST C
-    X_out = np.zeros((P, 2 * state_dim), dtype=np.float32)  # FINAL OUT ALL COMPONENTS
+    X_out = np.zeros((P, 2 * state_dim), dtype=np.float32)  # FINAL OUT
 
     for i0 in range(0, P, int(batch_size)):  # BATCH LOOP
         i1 = min(P, i0 + int(batch_size))  # BATCH END
         idx = slice(i0, i1)  # SLICE
 
-        X_t = to_tensor(X[idx], device)  # TO TENSOR
+        X_t = to_tensor(X[idx], device)  # START FROM x1
         C_t = C_t_all[idx]  # CONST C
 
-        for _k in range(int(steps)):  # APPLY STEPS
+        for _ in range(n_roll):  # ROLL x1 -> xT
             zk = encoder(X_t)  # ENC
             zk1 = dmd.predict(zk, steps=1)[-1]  # ONE STEP
             X_t = decoder(zk1)  # DEC
 
-            X_t[:, 2 * state_dim] = C_t[:, 0]  # FIX CR
-            X_t[:, 2 * state_dim + 1] = C_t[:, 1]  # FIX CI
+            X_t[:, 2 * state_dim] = C_t[:, 0]  # KEEP CR EXACT
+            X_t[:, 2 * state_dim + 1] = C_t[:, 1]  # KEEP CI EXACT
 
             x_cpu = X_t.detach().cpu().numpy().astype(np.float32)  # CPU
-            zr_all = x_cpu[:, 0:state_dim]  # ALL RE
-            zi_all = x_cpu[:, state_dim:2 * state_dim]  # ALL IM
+            zr_all = x_cpu[:, 0:state_dim]  # RE
+            zi_all = x_cpu[:, state_dim:2 * state_dim]  # IM
 
-            comp_mag2 = zr_all * zr_all + zi_all * zi_all  # COMPONENTWISE |z_i|^2
-            comp_mag = np.sqrt(np.maximum(comp_mag2, 1e-30)).astype(np.float32)  # COMPONENTWISE |z_i|
-            bad = (~np.isfinite(comp_mag)) | (comp_mag > float(escape_r))  # BAD MASK
+            comp_mag2 = zr_all * zr_all + zi_all * zi_all  # |z_i|^2
+            comp_mag = np.sqrt(np.maximum(comp_mag2, 1e-30)).astype(np.float32)  # |z_i|
+            bad = (~np.isfinite(comp_mag)) | (comp_mag > float(escape_r))  # BAD
 
-            if np.any(bad):  # FIX IF NEEDED
-                safe_mag = np.where((comp_mag > 0.0) & np.isfinite(comp_mag), comp_mag, 1.0).astype(
-                    np.float32)  # SAFE MAG
+            if np.any(bad):  # CLAMP
+                safe_mag = np.where((comp_mag > 0.0) & np.isfinite(comp_mag), comp_mag, 1.0).astype(np.float32)  # SAFE
                 scale = (float(escape_r) / safe_mag).astype(np.float32)  # SCALE
-                zr_all = np.where(bad, zr_all * scale, zr_all).astype(np.float32)  # CLAMP RE
-                zi_all = np.where(bad, zi_all * scale, zi_all).astype(np.float32)  # CLAMP IM
-                x_cpu[:, 0:state_dim] = zr_all  # WRITE ALL RE
-                x_cpu[:, state_dim:2 * state_dim] = zi_all  # WRITE ALL IM
+                zr_all = np.where(bad, zr_all * scale, zr_all).astype(np.float32)  # FIX RE
+                zi_all = np.where(bad, zi_all * scale, zi_all).astype(np.float32)  # FIX IM
+                x_cpu[:, 0:state_dim] = zr_all  # WRITE RE
+                x_cpu[:, state_dim:2 * state_dim] = zi_all  # WRITE IM
 
-            X_t = to_tensor(x_cpu, device)  # BACK
+            X_t = to_tensor(x_cpu, device)  # BACK TO DEVICE
 
-            x_final = X_t.detach().cpu().numpy().astype(np.float32)  # CPU FINAL
-            X_out[idx, 0:state_dim] = x_final[:, 0:state_dim]  # SAVE ALL RE
-            X_out[idx, state_dim:2 * state_dim] = x_final[:, state_dim:2 * state_dim]  # SAVE ALL IM
+        x_final = X_t.detach().cpu().numpy().astype(np.float32)  # FINAL
+        X_out[idx, 0:state_dim] = x_final[:, 0:state_dim]  # SAVE RE
+        X_out[idx, state_dim:2 * state_dim] = x_final[:, state_dim:2 * state_dim]  # SAVE IM
 
     return X_out.reshape(int(grid_n), int(grid_n), 2 * state_dim)  # RESHAPE
 

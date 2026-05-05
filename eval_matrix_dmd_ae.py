@@ -79,11 +79,14 @@ def save_ground_truth_final_mask(  # GT FINAL MASK
     d = (feat_dim - 2) // 2  # STATE DIM
     r2 = float(escape_r) * float(escape_r)  # R2
 
-    zr = td.X_grid[-1, :, :, 0:d]  # FINAL RE
-    zi = td.X_grid[-1, :, :, d:2 * d]  # FINAL IM
+    zr = td.X_grid[-1, :, :, 0:d].astype(np.float32, copy=False)  # FINAL RE
+    zi = td.X_grid[-1, :, :, d:2 * d].astype(np.float32, copy=False)  # FINAL IM
     comp_mag2 = zr * zr + zi * zi  # COMP MAG2
-    max_mag2 = np.max(comp_mag2, axis=-1)  # MAX MAG2
-    mask = max_mag2 < r2  # BOUNDED
+
+    stable_comp = comp_mag2 < r2  # COMPONENTWISE BOUNDED
+    stable_frac = np.mean(stable_comp, axis=-1)  # FRACTION OF BOUNDED COMPONENTS
+
+    mask = stable_frac >= 0.95  # WHITE IF 95% COMPONENTS ARE BOUNDED
 
     img = (mask.astype(np.uint8) * 255)  # BW
     pil_img = Image.fromarray(img, mode="L")  # MAKE IMAGE
@@ -136,8 +139,25 @@ def save_predicted_final_mask(  # MODEL FINAL MASK
     zr = Z_final[..., 0:d].astype(np.float32, copy=False)  # ALL RE
     zi = Z_final[..., d:2 * d].astype(np.float32, copy=False)  # ALL IM
     comp_mag2 = zr * zr + zi * zi  # ALL MAG2
-    max_mag2 = np.max(comp_mag2, axis=-1)  # MAX OVER COMPONENTS
-    mask = max_mag2 < float(escape_r) * float(escape_r)  # BOUNDED
+    #max_mag2 = np.max(comp_mag2, axis=-1)  # MAX OVER COMPONENTS
+    #mask = max_mag2 < float(escape_r) * float(escape_r)  # BOUNDED
+
+    r2 = float(escape_r) * float(escape_r)  # ESCAPE RADIUS SQUARED
+
+    stable_comp = comp_mag2 < r2  # COMPONENTWISE BOUNDED
+    stable_frac = np.mean(stable_comp, axis=-1)  # FRACTION OF BOUNDED COMPONENTS
+
+    mask = stable_frac >= 0.95  # WHITE IF 95% COMPONENTS ARE BOUNDED
+
+    max_mag = np.sqrt(np.max(comp_mag2, axis=-1))  # MAX COMPONENT MAGNITUDE
+
+    print("\n[PREDICTED FINAL MASK DEBUG]")  # DEBUG HEADER
+    print("min max_mag:", float(np.min(max_mag)))  # MIN MAG
+    print("mean max_mag:", float(np.mean(max_mag)))  # MEAN MAG
+    print("max max_mag:", float(np.max(max_mag)))  # MAX MAG
+    print("escape_r:", float(escape_r))  # ESCAPE
+    print("mean stable_frac:", float(np.mean(stable_frac)))  # MEAN STABLE FRACTION
+    print("white ratio:", float(np.mean(mask)))  # WHITE PIXELS
 
     img = (mask.astype(np.uint8) * 255)  # BW
     pil_img = Image.fromarray(img, mode="L")  # MAKE IMAGE

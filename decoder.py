@@ -6,10 +6,12 @@ class Decoder(nn.Module):  # DECODER CLASS
         super().__init__()  # CALL SUPER
         self.net = nn.Sequential(  # SEQ MODULE
             nn.Linear(latent_dim, 128),  # LINEAR LAYER
-            nn.ReLU(),  # ACTIVATION
+            nn.LeakyReLU(0.1),  # ACTIVATION
             nn.Linear(128, 256),  # LINEAR LAYER
-            nn.ReLU(),  # ACTIVATION
-            nn.Linear(256, output_dim)  # OUTPUT LAYER
+            nn.LeakyReLU(0.1),  # ACTIVATION
+            nn.Linear(256, 512),  # LINEAR LAYER
+            nn.LeakyReLU(0.1),  # ACTIVATION
+            nn.Linear(512, output_dim)  # OUTPUT LAYER
         )
 
     def forward(self, z):  # FORWARD PASS

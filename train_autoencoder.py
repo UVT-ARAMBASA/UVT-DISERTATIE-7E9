@@ -4,11 +4,14 @@ from __future__ import annotations  # ENABLE MODERN TYPE HINTS
 # #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=# IMPORTS #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=#
 import numpy as np  # NUMPY
 import torch  # TORCH
+import torch.nn as nn  # NEURAL MODULES
 from torch.utils.data import DataLoader, TensorDataset  # DATALOADER
+
+from losses import make_reconstruction_loss, koopman_ae_loss  # LOSS FUNCTIONS
 
 from encoder import Encoder  # YOUR ENCODER
 from decoder import Decoder  # YOUR DECODER
-from losses import make_reconstruction_loss  # YOUR LOSS
+#from losses import make_reconstruction_loss  # YOUR LOSS
 
 # #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=# TRAIN LOOP #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=#
 def train_autoencoder(  # TRAIN AE + DMD-LIKE PIPELINE
@@ -69,33 +72,35 @@ def train_autoencoder(  # TRAIN AE + DMD-LIKE PIPELINE
             for b1_cpu, b2_cpu in loader:  # BATCH LOOP
                 b1 = b1_cpu.to(device)  # MOVE BATCH ONLY
                 b2 = b2_cpu.to(device)  # MOVE BATCH ONLY
-                
+
+                #base_loss = make_reconstruction_loss(loss_mode=0)  # MSE
+
                 # #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=# AE ENCODE - BEGIN #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=#
                 z1 = enc(b1)  # ENCODE X1
                 z2 = enc(b2)  # ENCODE X2
                 # #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=# AE ENCODE - END #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=#
-                
+
                 # #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=# AE RECONSTRUCT - BEGIN #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=#
-                x1_rec = dec(z1)  # RECON X1
-                x2_rec = dec(z2)  # RECON X2
+                x1_rec = dec(z1)  # RECONSTRUCT X1
+                x2_rec = dec(z2)  # RECONSTRUCT X2
                 # #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=# AE RECONSTRUCT - END #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=#
-                
-                # #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=# DMD FIT AND PREDICT - BEGIN #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=#
-                A = z2.T @ torch.linalg.pinv(z1.T)  # BATCH DMD MATRIX
-                z2_pred = z1 @ A.T  # PREDICT LATENT X2
-                # #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=# DMD FIT AND PREDICT - END #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=#
 
-                # #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=# DECODE DMD PREDICTION - BEGIN #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=#
-                x2_pred_dec = dec(z2_pred)  # DECODE PREDICTED LATENT
-                # #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=# DECODE DMD PREDICTION - END #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=#
-                
-                # #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=# COMPUTE LOSSES - BEGIN #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=#
-                ae_loss = loss_fn(x1_rec, b1) + loss_fn(x2_rec, b2)  # AE LOSS
-                dmd_loss = loss_fn(z2_pred, z2)  # LATENT PRED LOSS
-                pred_dec_loss = loss_fn(x2_pred_dec, b2)  # DECODED PRED LOSS
-
-                loss = ae_loss + dmd_loss + pred_dec_loss  # TOTAL
-                # #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=# COMPUTE LOSSES-END #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=#
+                # #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=# COMPUTE KOOPMAN AE LOSS - BEGIN #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=#
+                loss, loss_info = koopman_ae_loss(  # COMPUTE FULL AE + DMD LOSS
+                    x1=b1,  # TRUE X1
+                    x2=b2,  # TRUE X2
+                    z1=z1,  # LATENT X1
+                    z2=z2,  # LATENT X2
+                    x1_rec=x1_rec,  # RECONSTRUCTED X1
+                    x2_rec=x2_rec,  # RECONSTRUCTED X2
+                    decoder=dec,  # DECODER
+                    base_loss=loss_fn,  # BASIC LOSS FUNCTION
+                    alpha_rec=0.5,  # RECONSTRUCTION WEIGHT
+                    alpha_lin=0.5,  # LATENT DMD WEIGHT
+                    alpha_pred=2.0,  # DECODED PREDICTION WEIGHT
+                    ridge=1e-6,  # SAFE DMD FIT
+                )
+                # #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=# COMPUTE KOOPMAN AE LOSS - END #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=#
                 
                 # OPTIMIZER STEP
                 # BEGIN #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=#

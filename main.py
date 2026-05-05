@@ -142,6 +142,11 @@ def main() -> None:  # ENTRYPOINT
         Z2_single = enc_single(to_tensor(td_single.X2, device)).detach().cpu().numpy()  # ENCODE X2
 
     dmd_single = fit_dmd_on_arrays(Z1_single, Z2_single, device=device)  # FIT DMD
+
+    A_single = dmd_single.A.detach().cpu().numpy()  # DMD MATRIX
+    rho_single = float(np.max(np.abs(np.linalg.eigvals(A_single))))  # SPECTRAL RADIUS
+    print("SINGLE DMD SPECTRAL RADIUS:", rho_single)  # DEBUGs
+
     save_predicted_final_mask(  # PRED PLOT
         td_single,  # DATA
         enc_single,  # ENCODER
@@ -171,6 +176,8 @@ def main() -> None:  # ENTRYPOINT
         state_dim=d,  # STATE DIM
         feat_dim=feat_dim,  # FEAT DIM
     )
+
+    debug_final_state_stats("SINGLE MATRIX", Z_single_final, D.ESCAPE_R)  # DEBUG
 
     save_final_snapshot_image(  # SAVE FINAL ITER IMAGE
         Z_single_final,  # FINAL STATE
@@ -245,7 +252,18 @@ def main() -> None:  # ENTRYPOINT
     save_model(enc_multi, os.path.join(D.CHECKPOINT_DIR, "encoder_multi_matrix.pth"))  # SAVE ENC
     save_model(dec_multi, os.path.join(D.CHECKPOINT_DIR, "decoder_multi_matrix.pth"))  # SAVE DEC
 
-    dmd_multi = fit_streamed_dmd_from_td_list(enc_multi, td_train_list, device)  # STREAMED DMD
+    with torch.no_grad():
+        Z1 = enc_multi(to_tensor(td_train_list[0].X1, device)).detach().cpu().numpy()
+        Z2 = enc_multi(to_tensor(td_train_list[0].X2, device)).detach().cpu().numpy()
+
+    dmd_one_matrix_inside_multi = fit_dmd_on_arrays(Z1, Z2, device=device)
+
+    dmd_multi = fit_streamed_dmd_from_td_list(enc_multi, td_train_list, device)  # FIT SHARED MULTI DMD
+
+    A_multi = dmd_multi.A.detach().cpu().numpy()  # DMD MATRIX
+    rho_multi = float(np.max(np.abs(np.linalg.eigvals(A_multi))))  # SPECTRAL RADIUS
+    print("MULTI DMD SPECTRAL RADIUS:", rho_multi)  # DEBUG
+
     print("MULTI-MATRIX DMD FIT DONE")  # LOG
 
     td_test_list = build_matrix_c_grid_training_data_many_matrices(  # BUILD TEST LIST
@@ -295,6 +313,20 @@ def main() -> None:  # ENTRYPOINT
 
     print_metric_block("MEAN TEST AE", mean_metric_dict(ae_test_metrics_all))  # PRINT MEAN
     print_metric_block("MEAN TEST DMD", mean_metric_dict(dmd_test_metrics_all))  # PRINT MEAN
+
+def debug_final_state_stats(name: str, Z_final: np.ndarray, escape_r: float) -> None:  # DEBUG FINAL STATE
+    d = Z_final.shape[-1] // 2  # STATE DIM
+    zr = Z_final[..., 0:d].astype(np.float32)  # RE
+    zi = Z_final[..., d:2 * d].astype(np.float32)  # IM
+    mag2 = zr * zr + zi * zi  # MAG2
+    max_mag = np.sqrt(np.max(mag2, axis=-1))  # MAX COMPONENT MAG PER PIXEL
+
+    print(f"\n[{name}] FINAL PRED STATS")  # HEADER
+    print("min max_mag:", float(np.min(max_mag)))  # MIN
+    print("mean max_mag:", float(np.mean(max_mag)))  # MEAN
+    print("max max_mag:", float(np.max(max_mag)))  # MAX
+    print("escape_r:", float(escape_r))  # RADIUS
+    print("white ratio:", float(np.mean(max_mag < float(escape_r))))  # WHITE FRACTION
 
 if __name__ == "__main__":  # MAIN GUARD
     main()  # RUN
