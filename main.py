@@ -29,6 +29,10 @@ from eval_matrix_dmd_ae import (  # EVAL
 
 from mandelbrot_reconstruct import reconstruct_final_snapshot, save_final_snapshot_image  # FINAL SNAPSHOT
 
+
+# ONLY AE and DMD
+from extra_optional import run_optional_baselines  # OPTIONAL AE-ONLY / DMD-ONLY RUNS
+
 # #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=#= DEVICE PICKER #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=#
 def pick_device() -> torch.device:  # SELECT DEVICE
     if D.USE_CUDA_IF_AVAILABLE and torch.cuda.is_available():  # CUDA AVAILABLE
@@ -82,6 +86,8 @@ def main() -> None:  # ENTRYPOINT
     Path("out/training-data/multi-matrix").mkdir(parents=True, exist_ok=True)  # MAKE DIR
     Path("out/result/single-matrix").mkdir(parents=True, exist_ok=True)  # MAKE DIR
     Path("out/result/multi-matrix").mkdir(parents=True, exist_ok=True)  # MAKE DIR
+
+    run_optional_baselines(device)  # RUN EXTRA AE-ONLY u. DMD-ONLY BEFORE
 
     # #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=# PART 1: SINGLE MATRIX SANITY CHECK #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=#
     print("\n================ SINGLE MATRIX CHECK ================\n")  # HEADER
