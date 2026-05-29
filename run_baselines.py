@@ -4,31 +4,22 @@ from __future__ import annotations  # ENABLE MODERN TYPE HINTS
 import argparse  # CLI
 
 from experiment_common import pick_device  # DEVICE
-from run_single_matrix import run_single_matrix  # SINGLE RUN
-from run_multi_matrix import run_multi_matrix  # MULTI RUN
 from extra_optional import run_ae_only_baseline, run_dmd_only_baseline  # BASELINES
 
 
 # ================================= MAIN =====================================
 def main() -> None:  # ENTRYPOINT
-    parser = argparse.ArgumentParser(description="Run one dissertation experiment")  # PARSER
-    parser.add_argument(  # EXPERIMENT ARG
-        "experiment",
-        choices=["single", "multi", "ae-only", "dmd-only"],
-        help="choose exactly one experiment to run",
-    )
+    parser = argparse.ArgumentParser(description="Run optional baselines only")  # PARSER
+    parser.add_argument("baseline", choices=["ae-only", "dmd-only", "both"], help="which baseline to run")  # ARG
     args = parser.parse_args()  # PARSE
 
     device = pick_device()  # DEVICE
     print("DEVICE:", device)  # PRINT
 
-    if args.experiment == "single":  # SINGLE MATRIX
-        run_single_matrix(device)  # RUN
-    elif args.experiment == "multi":  # MULTI MATRIX
-        run_multi_matrix(device)  # RUN
-    elif args.experiment == "ae-only":  # AE ONLY
+    if args.baseline in ("ae-only", "both"):  # AE ONLY
         run_ae_only_baseline(device)  # RUN
-    elif args.experiment == "dmd-only":  # DMD ONLY
+
+    if args.baseline in ("dmd-only", "both"):  # DMD ONLY
         run_dmd_only_baseline(device)  # RUN
 
 
