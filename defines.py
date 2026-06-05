@@ -1,76 +1,73 @@
-# ================================ defines.py ================================
-from __future__ import annotations  # ENABLE MODERN TYPE HINTS
+# ================================ DEFINES ==================================
+from __future__ import annotations  # TYPE HINTS
 
-# ================================ PATHS =====================================
-from pathlib import Path  # PATH BASE
+from pathlib import Path  # PATHS
 
-PROJECT_DIR = Path(__file__).resolve().parent  # PROJECT ROOT
-DATASET_OUT_NPZ = str(PROJECT_DIR / "data-set" / "training_data_mandelbrot.npz")  # DATASET FILE
-CHECKPOINT_DIR = str(PROJECT_DIR / "checkpoints")  # MODEL DIR
-OUTPUT_DIR = str(PROJECT_DIR / "outputs")  # OUTPUT DIR
-OUTPUT_IMAGE_PNG = str(PROJECT_DIR / "outputs" / "mandelbrot_reconstructed.png")  # PNG OUTPUT
-OUTPUT_IMAGE_PLOT_PNG = str(PROJECT_DIR / "outputs" / "mandelbrot_reconstructed_plot.png")  # PLOT OUTPUT
+# ================================= PATHS ====================================
+PROJECT_DIR = Path(__file__).resolve().parent  # ROOT
+DATA_DIR = PROJECT_DIR / "data"  # DATA DIR
+A_DATA_DIR = DATA_DIR  # A MATRIX DATA DIR
+OUT_DIR = PROJECT_DIR / "out"  # OUT DIR
+CHECKPOINT_DIR = PROJECT_DIR / "checkpoints"  # MODEL DIR
 
-# ============================== MANDELBROT BOX ==============================
-# ZOOM OUT 4X  # KEEP GRID_N
-C_RE_MIN = -0.05  # ZOOM NEAR STABLE ISLAND
-C_RE_MAX =  0.05  # ZOOM NEAR STABLE ISLAND
-C_IM_MIN = -0.05  # ZOOM NEAR STABLE ISLAND
-C_IM_MAX =  0.05  # ZOOM NEAR STABLE ISLAND
+# ================================ COMMANDS =================================
+COMMANDS = [  # CLI MODES
+    "single-matrix",  # AE DMD SINGLE
+    "multi-matrix",  # AE DMD MULTI
+    "ae-only-single",  # AE ONLY SINGLE
+    "ae-only-multi",  # AE ONLY MULTI
+    "dmd-only-single",  # DMD ONLY SINGLE
+    "dmd-only-multi",  # DMD ONLY MULTI
+    "ae-matrix-predict",  # AE READ MATRIX RECON PREDICT
+]
 
-GRID_N = 512  # IMAGE RESOLUTION (GRID_N x GRID_N)
-MAX_ITERS = 80  # ITERATIONS PER C
-ESCAPE_R = 2.0  # ESCAPE RADIUS  # ALSO USED AS CLAMP UPPER BOUND IN TRAINING
+# ============================== MANDELBROT BOX =============================
+C_RE_MIN = -0.05  # RE MIN
+C_RE_MAX = 0.05  # RE MAX
+C_IM_MIN = -0.05  # IM MIN
+C_IM_MAX = 0.05  # IM MAX
+ESCAPE_R = 2.0  # ESCAPE
+TRAIN_MAX_ITERS = 40  # TRAIN STEPS
+PREDICT_EXTRA_STEPS = 1  # NEXT STEPS
 
-# ========================== TRAINING DATA SETTINGS ===========================
-TRAIN_MAX_ITERS = 40  # FASTER TRAINING # WAS 100
-TRAIN_SEED = 0  # KEEP (NOT USED IN GRID MODE BUT OK)
+# ============================== SINGLE MATRIX ===============================
+SINGLE_MATRIX_SOURCE = "emotion"  # SOURCE
+SINGLE_MATRIX_INDEX = 15  # MATRIX ID
+SINGLE_MATRIX_C_RE_N = 128  # RE RES
+SINGLE_MATRIX_C_IM_N = 128  # IM RES
 
-# YOU ASKED: RESOLUTION ON C GRID FOR TRAINING
-TRAIN_C_RE_N = 256  # RESOLUTION OF PARAMETER C ON REAL SCALE
-TRAIN_C_IM_N = 256  # RESOLUTION OF PARAMETER C ON IMAGINARY SCALE
+# =============================== MULTI MATRIX ===============================
+MULTI_MATRIX_SOURCE = "emotion"  # SOURCE
+MULTI_MATRIX_TRAIN_COUNT = 40  # TRAIN COUNT
+MULTI_MATRIX_TEST_COUNT = 8  # TEST COUNT
+MULTI_MATRIX_SPLIT_SEED = 0  # SPLIT SEED
+MULTI_MATRIX_C_RE_N = 32  # SAFE RE RES
+MULTI_MATRIX_C_IM_N = 32  # SAFE IM RES
+MULTI_MATRIX_SAVE_FULL_FIRST = True  # SAVE SAMPLE
 
-# =============================== AE SETTINGS =================================
-LATENT_DIM = 64  # LATENT SIZE
-AE_EPOCHS = 15 # TRAIN EPOCHS
-AE_BATCH_SIZE = 2048  # BATCH SIZE
-AE_LR = 3e-4  # LEARNING RATE
+# =============================== AE SETTINGS ================================
+LATENT_DIM = 256  # LATENT
+AE_EPOCHS = 60  # EPOCHS
+AE_ONLY_EPOCHS = 60  # EPOCHS
+AE_BATCH_SIZE = 2048  # BATCH
+AE_LR = 1e-4  # LR
+AE_REC_WEIGHT = 1.0  # REC LOSS
+AE_PRED_WEIGHT = 2.0  # PRED LOSS
+AE_LATENT_WEIGHT = 0.1  # LATENT LOSS
+AE_PRED_USE_ALIVE_ONLY = True  # FILTER
 
-# =============================== DMD SETTINGS ================================
-DMD_RANK = None  # OPTIONAL TRUNCATION (NONE = FULL)
+# =============================== DMD SETTINGS ===============================
+DMD_RIDGE = 1e-6  # RIDGE
+DMD_FIT_BATCH_SIZE = 65536  # FIT BATCH
+AE_ENCODE_BATCH_SIZE = 65536  # ENCODE BATCH
+PREDICT_BATCH_SIZE = 4096  # PREDICT BATCH
 
-# ============================== RUNTIME FLAGS ================================
+# ============================== DISPLAY SAVE ================================
+IMAGE_SCALE = 4  # UPSCALE
+LOSS_DPI = 160  # DPI
+SAVE_CSV_DMD = True  # SAVE CSV
+
+# ================================ DEVICE ====================================
 USE_CUDA_IF_AVAILABLE = True  # GPU FLAG
-SHOW_PLOT = True  # DISPLAY FIGURE
-SAVE_PLOT = True  # SAVE PLOT PNG
-SAVE_IMAGE = True  # SAVE PIL PNG
 
-USE_A_SEQUENCES = True  # TOGGLE DATA SOURCE
-A_DATA_DIR = str(PROJECT_DIR / "data")  # FOLDER WITH task-emotion.npz + task-rest.npz
-
-# =========================== EXTRA BASELINE FLAGS ============================
-RUN_AE_ONLY_BASELINE = True  # RUN ENCODER-DECODER ONLY BEFORE MAIN CODE
-RUN_DMD_ONLY_BASELINE = True  # RUN RAW FULL-STATE DMD ONLY BEFORE MAIN CODE
-
-AE_ONLY_OUT_DIR = "out/AE-only"  # AE ONLY OUTPUT ROOT
-DMD_ONLY_OUT_DIR = "out/DMD-only"  # DMD ONLY OUTPUT ROOT
-
-AE_ONLY_EPOCHS = AE_EPOCHS  # USE SAME EPOCH COUNT AS NORMAL AE
-AE_ONLY_BATCH_SIZE = AE_BATCH_SIZE  # USE SAME BATCH SIZE
-AE_ONLY_LR = AE_LR  # USE SAME LEARNING RATE
-
-# ========================= MATRIX EXPERIMENT SETTINGS ========================
-# SINGLE MATRIX SANITY CHECK
-SINGLE_MATRIX_SOURCE = "emotion"  # WHICH NPZ
-#SINGLE MATRIX CHECK  # SINGLE SETTINGS
-SINGLE_MATRIX_INDEX = 1  # WHICH MATRIX
-SINGLE_MATRIX_C_RE_N = 128  # FASTER SINGLE RES # WAS 256
-SINGLE_MATRIX_C_IM_N = 128  # FASTER SINGLE RES # WAS 256s
-
-# MULTI MATRIX TRAIN/TEST  # MULTI SETTINGS
-MULTI_MATRIX_SOURCE = "emotion"  # WHICH NPZ
-MULTI_MATRIX_TRAIN_COUNT = 40  # EXPLICIT 40 TRAIN
-MULTI_MATRIX_TEST_COUNT = 8  # EXPLICIT 8 TEST
-MULTI_MATRIX_SPLIT_SEED = 0  # REPRODUCIBLE SPLIT
-MULTI_MATRIX_C_RE_N = 128  # FASTER MULTI RES # WAS 256 and then 64 (at 64 crashed)
-MULTI_MATRIX_C_IM_N = 128  # FASTER MULTI RES # WAS 256 and then 64 (at 64 crashed)
+#=============V26=================

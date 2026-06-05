@@ -2,7 +2,6 @@ from __future__ import annotations  # ENABLE MODERN TYPE HINTS
 
 # ================================ IMPORTS ==================================
 import os  # OS
-from pathlib import Path  # PATH
 import numpy as np  # NUMPY
 import torch  # TORCH
 
@@ -16,13 +15,21 @@ from eval_matrix_dmd_ae import (  # EVAL HELPERS
     autoencoder_reconstruction_metrics,
     dmd_one_step_metrics,
     save_ground_truth_final_mask,
-    save_predicted_final_mask,
+    save_ground_truth_escape_iters,
+    reconstruct_true_final_snapshot,
+    iterate_true_next_snapshot,
+    predict_next_snapshot,
+    next_step_prediction_metrics,
+    teacher_forced_escape_iters,
 )
+from mandelbrot_reconstruct import save_final_snapshot_image, save_escape_image  # IMAGE SAVERS
 from experiment_common import (  # COMMON HELPERS
     pick_device,
+    make_out_dirs,
     fit_streamed_dmd_from_td_list,
     print_metric_block,
     mean_metric_dict,
+    write_metrics_txt,
 )
 
 
@@ -34,27 +41,26 @@ def run_multi_matrix(device: torch.device | None = None) -> None:  # RUN MULTI E
     print("DEVICE:", device)  # PRINT
     print("CWD:", os.getcwd())  # PRINT
 
-    Path(D.CHECKPOINT_DIR).mkdir(parents=True, exist_ok=True)  # MAKE DIR
-    Path("out/training-data/multi-matrix").mkdir(parents=True, exist_ok=True)  # MAKE DIR
-    Path("out/result/multi-matrix").mkdir(parents=True, exist_ok=True)  # MAKE DIR
+    dirs = make_out_dirs("multi-matrix")  # out/multi-matrix/{training-data,results}
 
-    print("\n================ MULTI MATRIX 40 / 8 ================\n")  # HEADER
+    print("\n================ MULTI MATRIX TRAIN / TEST ================\n")  # HEADER
 
     A_all = load_all_A_matrices(D.A_DATA_DIR, source=D.MULTI_MATRIX_SOURCE)  # LOAD ALL
     total_matrices = int(A_all.shape[0])  # COUNT
     print("TOTAL MATRICES:", total_matrices)  # LOG
 
-    train_idx, test_idx = split_explicit_matrix_indices(  # EXPLICIT SPLIT
+    train_idx, test_idx = split_explicit_matrix_indices(  # 40 TRAIN / 8 TEST
         total_count=total_matrices,
         train_count=D.MULTI_MATRIX_TRAIN_COUNT,
         test_count=D.MULTI_MATRIX_TEST_COUNT,
         seed=D.MULTI_MATRIX_SPLIT_SEED,
     )
-
+    print("TRAIN COUNT:", int(train_idx.size), "TEST COUNT:", int(test_idx.size))  # LOG
     print("TRAIN IDX:", train_idx.tolist())  # LOG
     print("TEST IDX :", test_idx.tolist())  # LOG
 
-    td_train_list = build_matrix_c_grid_training_data_many_matrices(  # BUILD TRAIN DATA
+    # ------------------------------ TRAIN DATA ------------------------------
+    td_train_list = build_matrix_c_grid_training_data_many_matrices(  # BUILD TRAIN DATA (40)
         data_dir=D.A_DATA_DIR,
         source=D.MULTI_MATRIX_SOURCE,
         indices=train_idx,
@@ -68,17 +74,14 @@ def run_multi_matrix(device: torch.device | None = None) -> None:  # RUN MULTI E
         escape_r=D.ESCAPE_R,
     )
 
-    save_ground_truth_final_mask(  # SAVE TRAIN EXAMPLE
-        td_train_list[0],
-        D.ESCAPE_R,
-        "out/training-data/multi-matrix/train_example_gt_final_mask.png",
-        scale=64,
-    )
+    save_ground_truth_final_mask(td_train_list[0], D.ESCAPE_R, dirs["td"] / "train_example_gt_final_mask.png", scale=D.IMAGE_SCALE)  # TRAIN GT MASK
+    save_ground_truth_escape_iters(td_train_list[0], D.ESCAPE_R, dirs["td"] / "train_example_gt_escape_iters.png")  # TRAIN GT FRACTAL
 
     for td in td_train_list:  # FREE BIG GRIDS
         td.X_grid = None  # NOT NEEDED FOR TRAINING
 
-    enc_multi, dec_multi, losses_multi = train_autoencoder(  # TRAIN AE ON TRAIN MATRICES
+    # ------------------------------ TRAIN AE + DMD --------------------------
+    enc, dec, losses = train_autoencoder(  # TRAIN AE ON THE 40 TRAIN MATRICES
         [td.X1 for td in td_train_list],
         [td.X2 for td in td_train_list],
         latent_dim=D.LATENT_DIM,
@@ -88,18 +91,16 @@ def run_multi_matrix(device: torch.device | None = None) -> None:  # RUN MULTI E
         device=device,
     )
 
-    save_loss_curve(losses_multi, "out/result/multi-matrix/loss_curve.png", "40-Matrix AE Loss")  # LOSS
-    save_model(enc_multi, os.path.join(D.CHECKPOINT_DIR, "encoder_multi_matrix.pth"))  # SAVE ENC
-    save_model(dec_multi, os.path.join(D.CHECKPOINT_DIR, "decoder_multi_matrix.pth"))  # SAVE DEC
+    save_loss_curve(losses, dirs["res"] / "loss_curve.png", "Multi-Matrix AE Loss")  # LOSS
+    save_model(enc, os.path.join(D.CHECKPOINT_DIR, "encoder_multi_matrix.pth"))  # SAVE ENC
+    save_model(dec, os.path.join(D.CHECKPOINT_DIR, "decoder_multi_matrix.pth"))  # SAVE DEC
 
-    dmd_multi = fit_streamed_dmd_from_td_list(enc_multi, td_train_list, device)  # FIT SHARED MULTI DMD
+    dmd = fit_streamed_dmd_from_td_list(enc, td_train_list, device)  # FIT ONE SHARED LATENT DMD
+    rho = float(np.max(np.abs(np.linalg.eigvals(dmd.A.detach().cpu().numpy()))))  # SPECTRAL RADIUS
+    print("MULTI DMD SPECTRAL RADIUS:", rho)  # PRINT
 
-    A_multi = dmd_multi.A.detach().cpu().numpy()  # DMD MATRIX
-    rho_multi = float(np.max(np.abs(np.linalg.eigvals(A_multi))))  # SPECTRAL RADIUS
-    print("MULTI DMD SPECTRAL RADIUS:", rho_multi)  # PRINT
-    print("MULTI-MATRIX DMD FIT DONE")  # PRINT
-
-    td_test_list = build_matrix_c_grid_training_data_many_matrices(  # BUILD TEST DATA
+    # ------------------------------- TEST DATA ------------------------------
+    td_test_list = build_matrix_c_grid_training_data_many_matrices(  # BUILD TEST DATA (8 HELD-OUT)
         data_dir=D.A_DATA_DIR,
         source=D.MULTI_MATRIX_SOURCE,
         indices=test_idx,
@@ -113,34 +114,55 @@ def run_multi_matrix(device: torch.device | None = None) -> None:  # RUN MULTI E
         escape_r=D.ESCAPE_R,
     )
 
-    ae_test_metrics_all = []  # STORE AE METRICS
-    dmd_test_metrics_all = []  # STORE DMD METRICS
+    k = int(D.PREDICT_EXTRA_STEPS)  # STEPS AHEAD
+    ae_metrics_all = []  # STORE AE METRICS
+    dmd_metrics_all = []  # STORE DMD ONE-STEP METRICS
+    pred_metrics_all = []  # STORE NEXT-STEP PREDICTION METRICS
 
-    for k, td_test in enumerate(td_test_list):  # LOOP TEST MATRICES
-        ae_m = autoencoder_reconstruction_metrics(enc_multi, dec_multi, td_test.X, device)  # AE METRICS
-        dmd_m = dmd_one_step_metrics(enc_multi, dec_multi, dmd_multi, td_test.X1, td_test.X2, device)  # DMD METRICS
+    for j, td_test in enumerate(td_test_list):  # LOOP HELD-OUT TEST MATRICES
+        A_test = A_all[int(test_idx[j])]  # TRUE MATRIX FOR THIS TEST CASE
 
-        ae_test_metrics_all.append(ae_m)  # STORE
-        dmd_test_metrics_all.append(dmd_m)  # STORE
+        ae_m = autoencoder_reconstruction_metrics(enc, dec, td_test.X, device)  # RECON METRICS
+        dmd_m = dmd_one_step_metrics(enc, dec, dmd, td_test.X1, td_test.X2, device)  # ONE-STEP METRICS
 
-        print_metric_block(f"TEST MATRIX {int(test_idx[k])} AE", ae_m)  # PRINT
-        print_metric_block(f"TEST MATRIX {int(test_idx[k])} DMD", dmd_m)  # PRINT
+        Z_pred = predict_next_snapshot(td_test, enc, dec, dmd, device, steps=k, escape_r=D.ESCAPE_R)  # MODEL x_{T+k}
+        Z_true_next = iterate_true_next_snapshot(td_test, A_test, steps=k, escape_r=D.ESCAPE_R)  # TRUE x_{T+k}
+        pred_m = next_step_prediction_metrics(Z_pred, Z_true_next)  # PRED vs TRUE NEXT
 
-        if k == 0:  # SAVE ONE VISUAL EXAMPLE
-            save_ground_truth_final_mask(td_test, D.ESCAPE_R, "out/result/multi-matrix/test_gt_final_mask.png", scale=64)  # GT
-            save_predicted_final_mask(  # PRED
-                td_test,
-                enc_multi,
-                dec_multi,
-                dmd_multi,
-                device,
-                D.ESCAPE_R,
-                "out/result/multi-matrix/test_pred_final_mask.png",
-                scale=64,
-            )
+        ae_metrics_all.append(ae_m)  # STORE
+        dmd_metrics_all.append(dmd_m)  # STORE
+        pred_metrics_all.append(pred_m)  # STORE
 
-    print_metric_block("MEAN TEST AE", mean_metric_dict(ae_test_metrics_all))  # MEAN AE
-    print_metric_block("MEAN TEST DMD", mean_metric_dict(dmd_test_metrics_all))  # MEAN DMD
+        print_metric_block(f"TEST MATRIX {int(test_idx[j])} AE (RECON)", ae_m)  # PRINT
+        print_metric_block(f"TEST MATRIX {int(test_idx[j])} DMD (ONE-STEP)", dmd_m)  # PRINT
+        print_metric_block(f"TEST MATRIX {int(test_idx[j])} PREDICT (+{k})", pred_m)  # PRINT
+
+        if j == 0:  # SAVE ONE VISUAL EXAMPLE (GT + RECON + PREDICTION + TRUE NEXT)
+            save_ground_truth_final_mask(td_test, D.ESCAPE_R, dirs["res"] / "test_gt_final_mask.png", scale=D.IMAGE_SCALE)  # GT MASK
+            save_ground_truth_escape_iters(td_test, D.ESCAPE_R, dirs["res"] / "test_gt_escape_iters.png")  # GT FRACTAL
+
+            Z_recon = reconstruct_true_final_snapshot(td_test, enc, dec, device)  # RECON xT
+            save_final_snapshot_image(Z_recon, escape_r=D.ESCAPE_R, out_png=dirs["res"] / "test_recon_final_mask.png", mode="mask")  # RECON MASK
+            save_final_snapshot_image(Z_recon, escape_r=D.ESCAPE_R, out_png=dirs["res"] / "test_recon_final_snapshot_mag.png", mode="mag")  # RECON MAG
+
+            save_final_snapshot_image(Z_pred, escape_r=D.ESCAPE_R, out_png=dirs["res"] / "test_pred_final_mask.png", mode="mask")  # PRED MASK
+            save_final_snapshot_image(Z_pred, escape_r=D.ESCAPE_R, out_png=dirs["res"] / "test_pred_final_snapshot_mag.png", mode="mag")  # PRED MAG
+            save_final_snapshot_image(Z_true_next, escape_r=D.ESCAPE_R, out_png=dirs["res"] / "test_true_next_final_mask.png", mode="mask")  # TRUE NEXT MASK
+            save_final_snapshot_image(Z_true_next, escape_r=D.ESCAPE_R, out_png=dirs["res"] / "test_true_next_final_snapshot_mag.png", mode="mag")  # TRUE NEXT MAG
+
+            iters_pred = teacher_forced_escape_iters(td_test, enc, dec, dmd, device, escape_r=D.ESCAPE_R)  # PRED FRACTAL
+            save_escape_image(iters_pred, max_iters=int(td_test.X_grid.shape[0]), out_png=dirs["res"] / "test_pred_escape_iters.png")  # SAVE FRACTAL
+
+    mean_ae = mean_metric_dict(ae_metrics_all)  # MEAN AE
+    mean_dmd = mean_metric_dict(dmd_metrics_all)  # MEAN DMD ONE-STEP
+    mean_pred = mean_metric_dict(pred_metrics_all)  # MEAN PREDICTION
+    print_metric_block("MEAN TEST AE (RECON)", mean_ae)  # PRINT
+    print_metric_block("MEAN TEST DMD (ONE-STEP)", mean_dmd)  # PRINT
+    print_metric_block(f"MEAN TEST PREDICT (+{k})", mean_pred)  # PRINT
+    write_metrics_txt(  # SAVE
+        dirs["res"] / "mean_test_metrics.txt",
+        {**mean_ae, **mean_dmd, **mean_pred, "predict_extra_steps": float(k), "dmd_spectral_radius": rho},
+    )
 
 
 if __name__ == "__main__":  # DIRECT RUN

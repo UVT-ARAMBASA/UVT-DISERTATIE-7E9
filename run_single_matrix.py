@@ -2,12 +2,12 @@ from __future__ import annotations  # ENABLE MODERN TYPE HINTS
 
 # ================================ IMPORTS ==================================
 import os  # OS
-from pathlib import Path  # PATH
 import numpy as np  # NUMPY
 import torch  # TORCH
 
 import defines as D  # DEFINES
 from utils import save_model, to_tensor  # HELPERS
+from data_loader import load_one_A_matrix  # TRUE MATRIX FOR GROUND-TRUTH NEXT STEP
 from prepare_training_data import build_matrix_c_grid_training_data, save_training_npz  # DATA
 from train_autoencoder import train_autoencoder  # AE TRAINING
 from apply_dmd import fit_dmd_on_arrays  # DMD FIT
@@ -16,11 +16,21 @@ from eval_matrix_dmd_ae import (  # EVAL HELPERS
     autoencoder_reconstruction_metrics,
     dmd_one_step_metrics,
     save_ground_truth_final_mask,
-    save_predicted_final_mask,
     save_ground_truth_escape_iters,
+    reconstruct_true_final_snapshot,
+    iterate_true_next_snapshot,
+    predict_next_snapshot,
+    next_step_prediction_metrics,
+    teacher_forced_escape_iters,
 )
-from mandelbrot_reconstruct import reconstruct_final_snapshot, save_final_snapshot_image  # RECON
-from experiment_common import pick_device, print_metric_block, debug_final_state_stats  # COMMON
+from mandelbrot_reconstruct import save_final_snapshot_image, save_escape_image  # IMAGE SAVERS
+from experiment_common import (  # COMMON
+    pick_device,
+    make_out_dirs,
+    print_metric_block,
+    write_metrics_txt,
+    debug_final_state_stats,
+)
 
 
 # ============================= SINGLE MATRIX RUN ============================
@@ -31,13 +41,14 @@ def run_single_matrix(device: torch.device | None = None) -> None:  # RUN SINGLE
     print("DEVICE:", device)  # PRINT
     print("CWD:", os.getcwd())  # PRINT
 
-    Path(D.CHECKPOINT_DIR).mkdir(parents=True, exist_ok=True)  # MAKE DIR
-    Path("out/training-data/single-matrix").mkdir(parents=True, exist_ok=True)  # MAKE DIR
-    Path("out/result/single-matrix").mkdir(parents=True, exist_ok=True)  # MAKE DIR
+    dirs = make_out_dirs("single-matrix")  # out/single-matrix/{training-data,results}
 
     print("\n================ SINGLE MATRIX CHECK ================\n")  # HEADER
 
-    td_single = build_matrix_c_grid_training_data(  # BUILD ONE MATRIX DATA
+    # ------------------------------- BUILD DATA -----------------------------
+    A = load_one_A_matrix(D.A_DATA_DIR, source=D.SINGLE_MATRIX_SOURCE, index=D.SINGLE_MATRIX_INDEX)  # TRUE MATRIX
+
+    td = build_matrix_c_grid_training_data(  # BUILD ONE MATRIX DATA
         data_dir=D.A_DATA_DIR,  # DATA DIR
         source=D.SINGLE_MATRIX_SOURCE,  # SOURCE
         index=D.SINGLE_MATRIX_INDEX,  # MATRIX INDEX
@@ -51,13 +62,18 @@ def run_single_matrix(device: torch.device | None = None) -> None:  # RUN SINGLE
         escape_r=D.ESCAPE_R,  # ESCAPE
     )
 
-    save_ground_truth_escape_iters(td_single, D.ESCAPE_R, "out/training-data/single-matrix/gt_escape_iters.png")  # GT ESCAPE
-    save_training_npz("out/training-data/single-matrix/training_single_matrix.npz", td_single)  # SAVE DATA
-    save_ground_truth_final_mask(td_single, D.ESCAPE_R, "out/training-data/single-matrix/gt_final_mask.png", scale=64)  # GT MASK
+    # ------------------------------ SAVE TRAINING DATA ----------------------
+    save_training_npz(dirs["td"] / "training_single_matrix.npz", td)  # SAVE NPZ
+    save_ground_truth_escape_iters(td, D.ESCAPE_R, dirs["td"] / "gt_escape_iters.png")  # GT FRACTAL
+    save_ground_truth_final_mask(td, D.ESCAPE_R, dirs["td"] / "gt_final_mask.png", scale=D.IMAGE_SCALE)  # GT MASK
 
-    enc_single, dec_single, losses_single = train_autoencoder(  # TRAIN AE
-        td_single.X1,  # LEFT
-        td_single.X2,  # RIGHT
+    feat_dim = int(td.X_grid.shape[-1])  # FEAT DIM
+    d = (feat_dim - 2) // 2  # STATE DIM
+
+    # ------------------------------ TRAIN AE + DMD --------------------------
+    enc, dec, losses = train_autoencoder(  # TRAIN AE (KOOPMAN LOSS)
+        td.X1,  # LEFT
+        td.X2,  # RIGHT
         latent_dim=D.LATENT_DIM,  # LATENT
         epochs=D.AE_EPOCHS,  # EPOCHS
         batch_size=D.AE_BATCH_SIZE,  # BATCH
@@ -65,62 +81,51 @@ def run_single_matrix(device: torch.device | None = None) -> None:  # RUN SINGLE
         device=device,  # DEVICE
     )
 
-    save_loss_curve(losses_single, "out/result/single-matrix/loss_curve.png", "Single Matrix AE Loss")  # LOSS
-    save_model(enc_single, os.path.join(D.CHECKPOINT_DIR, "encoder_single_matrix.pth"))  # SAVE ENC
-    save_model(dec_single, os.path.join(D.CHECKPOINT_DIR, "decoder_single_matrix.pth"))  # SAVE DEC
+    save_loss_curve(losses, dirs["res"] / "loss_curve.png", "Single Matrix AE Loss")  # LOSS
+    save_model(enc, os.path.join(D.CHECKPOINT_DIR, "encoder_single_matrix.pth"))  # SAVE ENC
+    save_model(dec, os.path.join(D.CHECKPOINT_DIR, "decoder_single_matrix.pth"))  # SAVE DEC
 
     with torch.no_grad():  # NO GRAD
-        Z1_single = enc_single(to_tensor(td_single.X1, device)).detach().cpu().numpy()  # ENCODE X1
-        Z2_single = enc_single(to_tensor(td_single.X2, device)).detach().cpu().numpy()  # ENCODE X2
+        Z1 = enc(to_tensor(td.X1, device)).detach().cpu().numpy()  # ENCODE X1
+        Z2 = enc(to_tensor(td.X2, device)).detach().cpu().numpy()  # ENCODE X2
 
-    dmd_single = fit_dmd_on_arrays(Z1_single, Z2_single, device=device)  # FIT DMD
+    dmd = fit_dmd_on_arrays(Z1, Z2, device=device)  # FIT DMD IN LATENT SPACE
+    rho = float(np.max(np.abs(np.linalg.eigvals(dmd.A.detach().cpu().numpy()))))  # SPECTRAL RADIUS
+    print("SINGLE DMD SPECTRAL RADIUS:", rho)  # PRINT
 
-    A_single = dmd_single.A.detach().cpu().numpy()  # DMD MATRIX
-    rho_single = float(np.max(np.abs(np.linalg.eigvals(A_single))))  # SPECTRAL RADIUS
-    print("SINGLE DMD SPECTRAL RADIUS:", rho_single)  # PRINT
+    # ----------------------------- RECONSTRUCTION ---------------------------
+    # THE SYSTEM AS IS: ENCODE-DECODE THE TRUE FINAL STATE xT (NO TIME STEP)
+    Z_recon = reconstruct_true_final_snapshot(td, enc, dec, device)  # RECON xT
+    save_final_snapshot_image(Z_recon, escape_r=D.ESCAPE_R, out_png=dirs["res"] / "recon_final_mask.png", mode="mask")  # RECON MASK
+    save_final_snapshot_image(Z_recon, escape_r=D.ESCAPE_R, out_png=dirs["res"] / "recon_final_snapshot_mag.png", mode="mag")  # RECON MAG
 
-    save_predicted_final_mask(  # SAVE PRED MASK
-        td_single,
-        enc_single,
-        dec_single,
-        dmd_single,
-        device,
-        D.ESCAPE_R,
-        "out/result/single-matrix/pred_final_mask.png",
-        scale=64,
-    )
+    # ------------------------------- PREDICTION -----------------------------
+    # THEN PREDICT THE NEXT PREDICT_EXTRA_STEPS STEP(S) STARTING FROM THE TRUE xT
+    k = int(D.PREDICT_EXTRA_STEPS)  # HOW MANY STEPS AHEAD
 
-    feat_dim = int(td_single.X_grid.shape[-1])  # FEATURE DIM
-    d = (feat_dim - 2) // 2  # STATE DIM
-    T = int(td_single.X_grid.shape[0])  # STEPS
-    C_single = td_single.X_grid[0, :, :, 2 * d:2 * d + 2].reshape(-1, 2).astype(np.float32)  # C GRID
+    Z_pred = predict_next_snapshot(td, enc, dec, dmd, device, steps=k, escape_r=D.ESCAPE_R)  # MODEL x_{T+k}
+    Z_true_next = iterate_true_next_snapshot(td, A, steps=k, escape_r=D.ESCAPE_R)  # TRUE x_{T+k}
+    debug_final_state_stats(f"SINGLE MATRIX (+{k})", Z_pred, D.ESCAPE_R)  # DEBUG
 
-    Z_single_final = reconstruct_final_snapshot(  # FINAL SNAPSHOT
-        encoder=enc_single,
-        decoder=dec_single,
-        dmd=dmd_single,
-        C=C_single,
-        grid_n=D.SINGLE_MATRIX_C_RE_N,
-        steps=T,
-        escape_r=D.ESCAPE_R,
-        device=device,
-        batch_size=50000,
-        state_dim=d,
-        feat_dim=feat_dim,
-    )
+    save_final_snapshot_image(Z_pred, escape_r=D.ESCAPE_R, out_png=dirs["res"] / "pred_final_mask.png", mode="mask")  # PRED MASK
+    save_final_snapshot_image(Z_pred, escape_r=D.ESCAPE_R, out_png=dirs["res"] / "pred_final_snapshot_mag.png", mode="mag")  # PRED MAG
+    save_final_snapshot_image(Z_true_next, escape_r=D.ESCAPE_R, out_png=dirs["res"] / "true_next_final_mask.png", mode="mask")  # TRUE NEXT MASK
+    save_final_snapshot_image(Z_true_next, escape_r=D.ESCAPE_R, out_png=dirs["res"] / "true_next_final_snapshot_mag.png", mode="mag")  # TRUE NEXT MAG
 
-    debug_final_state_stats("SINGLE MATRIX", Z_single_final, D.ESCAPE_R)  # DEBUG
-    save_final_snapshot_image(  # SAVE FINAL IMAGE
-        Z_single_final,
-        escape_r=D.ESCAPE_R,
-        out_png="out/result/single-matrix/pred_final_snapshot_mag.png",
-        mode="mask",
-    )
+    # PREDICTED FRACTAL (TEACHER FORCED: PREDICT x_{t+1} FROM EACH TRUE x_t, NO COMPOUNDING)
+    iters_pred = teacher_forced_escape_iters(td, enc, dec, dmd, device, escape_r=D.ESCAPE_R)  # PRED FRACTAL
+    save_escape_image(iters_pred, max_iters=int(td.X_grid.shape[0]), out_png=dirs["res"] / "pred_escape_iters.png")  # SAVE FRACTAL
 
-    ae_single_metrics = autoencoder_reconstruction_metrics(enc_single, dec_single, td_single.X, device)  # AE METRICS
-    dmd_single_metrics = dmd_one_step_metrics(enc_single, dec_single, dmd_single, td_single.X1, td_single.X2, device)  # DMD METRICS
-    print_metric_block("SINGLE MATRIX AE", ae_single_metrics)  # PRINT
-    print_metric_block("SINGLE MATRIX DMD", dmd_single_metrics)  # PRINT
+    # -------------------------------- METRICS -------------------------------
+    ae_m = autoencoder_reconstruction_metrics(enc, dec, td.X, device)  # RECON METRICS
+    dmd_m = dmd_one_step_metrics(enc, dec, dmd, td.X1, td.X2, device)  # ONE-STEP TEACHER-FORCED METRICS
+    pred_m = next_step_prediction_metrics(Z_pred, Z_true_next)  # PREDICTED vs TRUE NEXT STEP
+    print_metric_block("SINGLE MATRIX AE (RECON)", ae_m)  # PRINT
+    print_metric_block("SINGLE MATRIX DMD (ONE-STEP)", dmd_m)  # PRINT
+    print_metric_block(f"SINGLE MATRIX PREDICT (+{k} FROM TRUE xT)", pred_m)  # PRINT
+
+    metrics = {**ae_m, **dmd_m, **pred_m, "predict_extra_steps": float(k), "dmd_spectral_radius": rho}  # MERGE
+    write_metrics_txt(dirs["res"] / "metrics.txt", metrics)  # SAVE METRICS
 
 
 if __name__ == "__main__":  # DIRECT RUN
