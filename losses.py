@@ -5,6 +5,8 @@ from __future__ import annotations  # ENABLE MODERN TYPE HINTS
 import torch  # TORCH
 import torch.nn.functional as F  # TORCH FUNCTIONAL LOSSES
 
+import defines
+
 
 # #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=# BASIC LOSS FACTORY #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=#
 def make_reconstruction_loss(  # MAKE BASIC RECONSTRUCTION LOSS
@@ -42,7 +44,7 @@ def make_reconstruction_loss(  # MAKE BASIC RECONSTRUCTION LOSS
 
 
 # #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=# DMD FIT INSIDE LOSS #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=#
-def fit_batch_dmd_matrix(  # FIT SMALL DMD MATRIX ON CURRENT BATCH
+def fit_batch_dmd_matrix_OLD(  # FIT SMALL DMD MATRIX ON CURRENT BATCH
     z1: torch.Tensor,  # LATENT STATES AT TIME T
     z2: torch.Tensor,  # LATENT STATES AT TIME T+1
     ridge: float = 1e-6,  # RIDGE REGULARISATION
@@ -63,6 +65,16 @@ def fit_batch_dmd_matrix(  # FIT SMALL DMD MATRIX ON CURRENT BATCH
 
     return A  # RETURN DMD MATRIX
 
+def fit_batch_dmd_matrix(
+        z1: torch.Tensor, # LATENT STATES AT TIME T
+        z2: torch.Tensor, # LATENT STATES AT TIME T+1
+        ridge: float = defines.DMD_RIDGE, #RIDGE REGULARISATION FROM DEFINES
+) -> torch.Tensor:
+    U, S, Vh = torch.linalg.svd(z1, full_matrices=False) # SVD OF SNAPSHOTS
+    S_inv = S / (S * S + ridge) #DAMPED 1/sigma (REGULARISED PINV)
+    z1_pinv = (Vh.transpose(-1,-2) * S_inv) @ U.transpose(-1,-2)  # (dim, N)
+    A_t = z1_pinv @ z2 # (dimension, dimension) = z1hat + z2
+    return A_t.transpose(-1,-2)
 
 # #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=# KOOPMAN AE LOSS #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=#
 def koopman_ae_loss(  # AUTOENCODER + LATENT DMD LOSS

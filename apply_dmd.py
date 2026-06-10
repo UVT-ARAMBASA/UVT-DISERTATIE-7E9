@@ -36,7 +36,7 @@ def fit_dmd_from_latent_covariances(  # FIT FROM STREAMED COVS
     *,
     device: torch.device,  # DEVICE
 ) -> DMDDynamics:
-    A_t = np.linalg.pinv(G) @ H  # SOLVE Z2 = Z1 A^T
+    A_t = np.linalg.solve(G + 1e-2 * np.eye(G.shape[0], dtype=G.dtype), H) # RIDGED SOLVE
     dmd = DMDDynamics(device=device)  # INIT
     dmd.A = torch.tensor(A_t.T, dtype=torch.float32, device=device)  # STORE A
     return dmd  # RETURN

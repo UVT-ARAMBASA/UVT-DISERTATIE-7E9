@@ -11,7 +11,8 @@ class Encoder(nn.Module):  # ENCODER CLASS
             nn.LeakyReLU(0.1),  # ACTIVATION
             nn.Linear(256, 128),  # LINEAR LAYER
             nn.LeakyReLU(0.1),  # ACTIVATION
-            nn.Linear(128, latent_dim)  # LATENT OUTPUT
+            nn.Linear(128, latent_dim),  # LATENT OUTPUT
+            nn.LayerNorm(latent_dim)  # NORMALISE LATENT
         )
 
     def forward(self, x):  # FORWARD PASS

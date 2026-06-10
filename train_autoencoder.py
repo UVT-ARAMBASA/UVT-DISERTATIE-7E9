@@ -9,9 +9,11 @@ from torch.utils.data import DataLoader, TensorDataset  # DATALOADER
 
 from losses import make_reconstruction_loss, koopman_ae_loss  # LOSS FUNCTIONS
 
-from encoder import Encoder  # YOUR ENCODER
-from decoder import Decoder  # YOUR DECODER
-#from losses import make_reconstruction_loss  # YOUR LOSS
+import defines as D # FORGOT DEFINES
+
+from encoder import Encoder  # ENCODER
+from decoder import Decoder  # DECODER
+#from losses import make_reconstruction_loss  # LOSS
 
 # #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=# TRAIN LOOP #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=#
 def train_autoencoder(  # TRAIN AE + DMD-LIKE PIPELINE
@@ -95,10 +97,11 @@ def train_autoencoder(  # TRAIN AE + DMD-LIKE PIPELINE
                     x2_rec=x2_rec,  # RECONSTRUCTED X2
                     decoder=dec,  # DECODER
                     base_loss=loss_fn,  # BASIC LOSS FUNCTION
-                    alpha_rec=0.5,  # RECONSTRUCTION WEIGHT
-                    alpha_lin=0.5,  # LATENT DMD WEIGHT
-                    alpha_pred=2.0,  # DECODED PREDICTION WEIGHT
-                    ridge=1e-6,  # SAFE DMD FIT
+                    alpha_rec=D.AE_REC_WEIGHT,  # RECONSTRUCTION WEIGHT
+                    alpha_lin=D.AE_LATENT_WEIGHT,  # LATENT DMD WEIGHT
+                    alpha_pred=D.AE_PRED_WEIGHT,  # DECODED PREDICTION WEIGHT
+                    ridge=D.DMD_RIDGE,  # SAFE DMD FIT
+                    # VALUES WERE HARDCODED IN V30. 'TWAS A MISTAKE ON MY PART
                 )
                 # #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=# COMPUTE KOOPMAN AE LOSS - END #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=#
                 
@@ -106,6 +109,8 @@ def train_autoencoder(  # TRAIN AE + DMD-LIKE PIPELINE
                 # BEGIN #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=#
                 opt.zero_grad()  # ZERO
                 loss.backward()  # BACKPROP
+                torch.nn.utils.clip_grad_norm_(list(enc.parameters()) + list(dec.parameters()),
+                                               max_norm=1.0) # FIXES LOSS SPIKE AT SYMPTOM LEVEL (MAYBE REMOVE) - UNSURE IF THE RIGHT APPROACH
                 opt.step()  # STEP
                 
                 # OPTIMIZER STEP
