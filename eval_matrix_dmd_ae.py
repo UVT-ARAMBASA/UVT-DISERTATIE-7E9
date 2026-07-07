@@ -197,6 +197,73 @@ def next_step_prediction_metrics(pred_grid: np.ndarray, true_grid: np.ndarray) -
     fit = float(1.0 - rel_l2)  # FIT
     return {"pred_mse": mse, "pred_rel_l2": rel_l2, "pred_fit": fit}  # RETURN
 
+# ============= ADDED in V33 ===============
+@torch.no_grad()  # NO GRAD
+def predict_rollout_from_start_ae_dmd(  # AE+DMD ROLLOUT FROM TRUE x1
+    td,
+    encoder,
+    decoder,
+    dmd,
+    device,
+    *,
+    steps: int,
+    escape_r: float,
+    batch_size: int = 50000,
+) -> np.ndarray:  # AE+DMD x_2 ... x_{steps} FROM THE TRUE ANCHOR x_1
+    # START FROM x1 (TRUE FIRST STORED STATE -- z0=0 SO x1 = c IN ALL COMPONENTS)
+    # SAME CONVENTION AS predict_rollout_from_start_ae_predictor, BUT STEPS
+    # THROUGH THE FITTED LATENT DMD INSTEAD OF USING THE DECODER DIRECTLY.
+    if td.X_grid is None:  # NEED GRID
+        raise ValueError("AE+DMD ROLLOUT-FROM-START NEEDS td.X_grid")  # ERROR
+
+    feat_dim = int(td.X_grid.shape[-1])  # FEATURE DIM
+    d = int((feat_dim - 2) // 2)  # STATE DIM
+    H = int(td.X_grid.shape[1])  # HEIGHT
+    W = int(td.X_grid.shape[2])  # WIDTH
+    r = float(escape_r)  # R
+
+    n_roll = max(int(steps) - 1, 0)  # T-1 STEPS FROM x1 TO REACH x_{steps}
+
+    X_1 = td.X_grid[0].reshape(-1, feat_dim).astype(np.float32)  # TRUE x1
+    C = X_1[:, 2 * d:2 * d + 2].copy().astype(np.float32)  # C VALUES
+
+    P = int(X_1.shape[0])  # PIXELS
+    future = np.zeros((n_roll, P, 2 * d), dtype=np.float32)  # OUTPUT: x_2 .. x_{steps}
+
+    for i0 in range(0, P, int(batch_size)):  # BATCH LOOP
+        i1 = min(P, i0 + int(batch_size))  # END
+
+        X_t = to_tensor(X_1[i0:i1], device)  # START FROM TRUE x1
+        C_t = to_tensor(C[i0:i1], device)  # C
+
+        for s in range(n_roll):  # ROLL x1 -> x_{steps} THROUGH LATENT DMD
+            zk = encoder(X_t)  # ENC
+            zk1 = dmd.predict(zk, steps=1)[-1]  # ONE DMD STEP
+            X_t = decoder(zk1)  # DEC
+            X_t[:, 2 * d] = C_t[:, 0]  # KEEP CR EXACT
+            X_t[:, 2 * d + 1] = C_t[:, 1]  # KEEP CI EXACT
+
+            x_np = X_t.detach().cpu().numpy().astype(np.float32)  # CPU
+            zr = x_np[:, 0:d]  # REAL
+            zi = x_np[:, d:2 * d]  # IMAG
+            mag = np.sqrt(np.maximum(zr * zr + zi * zi, 1e-30)).astype(np.float32)  # MAG
+            bad = (~np.isfinite(mag)) | (mag > r)  # ESCAPED
+
+            if np.any(bad):  # CLAMP, SAME AS THE DATA BUILDER
+                safe = np.where((mag > 0.0) & np.isfinite(mag), mag, 1.0).astype(np.float32)  # SAFE
+                scale = (r / safe).astype(np.float32)  # SCALE
+                x_np[:, 0:d] = np.where(bad, zr * scale, zr).astype(np.float32)  # CLAMP RE
+                x_np[:, d:2 * d] = np.where(bad, zi * scale, zi).astype(np.float32)  # CLAMP IM
+
+            x_np[:, 2 * d:2 * d + 2] = C[i0:i1]  # KEEP C EXACT
+
+            future[s, i0:i1, 0:d] = x_np[:, 0:d]  # SAVE RE
+            future[s, i0:i1, d:2 * d] = x_np[:, d:2 * d]  # SAVE IM
+
+            X_t = to_tensor(x_np, device)  # FEED PREDICTION BACK
+
+    return future.reshape(n_roll, H, W, 2 * d)  # RETURN x_2 ... x_{steps}
+
 # ===================== TEACHER-FORCED PREDICTED FRACTAL =====================
 @torch.no_grad()  # NO GRAD
 def teacher_forced_escape_iters(td, encoder, decoder, dmd, device: torch.device, *, escape_r: float, batch_size: int = 50000) -> np.ndarray:  # ONE-STEP PRED FRACTAL
