@@ -4,7 +4,7 @@ from __future__ import annotations  # ENABLE MODERN TYPE HINTS
 # #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=# IMPORTS #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=#
 import torch  # TORCH
 import torch.nn.functional as F  # TORCH FUNCTIONAL LOSSES
-
+from tensor_diagnostics import check_tensor
 import defines
 
 
@@ -65,7 +65,7 @@ def fit_batch_dmd_matrix_OLD(  # FIT SMALL DMD MATRIX ON CURRENT BATCH
 
     return A  # RETURN DMD MATRIX
 
-def fit_batch_dmd_matrix(
+def fit_batch_dmd_matrix_NEW(
         z1: torch.Tensor, # LATENT STATES AT TIME T
         z2: torch.Tensor, # LATENT STATES AT TIME T+1
         ridge: float = defines.DMD_RIDGE, #RIDGE REGULARISATION FROM DEFINES
@@ -76,6 +76,29 @@ def fit_batch_dmd_matrix(
     A_t = z1_pinv @ z2 # (dimension, dimension) = z1hat + z2
     return A_t.transpose(-1,-2)
 
+def fit_batch_dmd_matrix__CU_CHECKER(
+        z1: torch.Tensor, # LATENT STATES AT TIME T
+        z2: torch.Tensor, # LATENT STATES AT TIME T+1
+        ridge: float = defines.DMD_RIDGE, #RIDGE REGULARISATION FROM DEFINES
+) -> torch.Tensor:
+    check_tensor(z1, name="z1")  # <-- one line, prints right before the crash poin
+    U, S, Vh = torch.linalg.svd(z1, full_matrices=False) # SVD OF SNAPSHOTS
+    S_inv = S / (S * S + ridge) #DAMPED 1/sigma (REGULARISED PINV)
+    z1_pinv = (Vh.transpose(-1,-2) * S_inv) @ U.transpose(-1,-2)  # (dim, N)
+    A_t = z1_pinv @ z2 # (dimension, dimension) = z1hat + z2
+    return A_t.transpose(-1,-2)
+
+def fit_batch_dmd_matrix(
+        z1: torch.Tensor,
+        z2: torch.Tensor,
+        ridge: float = defines.DMD_RIDGE,
+) -> torch.Tensor:
+    latent_dim = z1.shape[1]
+    eye = torch.eye(latent_dim, dtype=z1.dtype, device=z1.device)
+    G = z1.T @ z1
+    H = z1.T @ z2
+    A_t = torch.linalg.solve(G + ridge * eye, H)
+    return A_t.T
 # #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=# KOOPMAN AE LOSS #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=#
 def koopman_ae_loss(  # AUTOENCODER + LATENT DMD LOSS
     x1: torch.Tensor,  # TRUE STATE AT TIME T

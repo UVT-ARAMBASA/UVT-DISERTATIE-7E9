@@ -4,6 +4,7 @@ from __future__ import annotations  # MODERN TYPE HINTS
 # ================================= IMPORTS ==================================
 import numpy as np  # NUMPY
 import torch  # TORCH
+import torch.nn as nn  # NN MODULE
 from PIL import Image  # IMAGE SAVE
 from pathlib import Path  # PATHS
 from torch.utils.data import DataLoader, TensorDataset  # TRAIN LOADER
@@ -12,6 +13,7 @@ import defines as D  # PROJECT DEFINES
 
 from encoder import Encoder  # ENCODER MODEL
 from decoder import Decoder  # DECODER MODEL
+from quadratic_predictor import make_quadratic_predictor_pair, plot_learned_vs_true_matrix_spectrum  # QUADRATIC PREDICTOR
 from losses import make_reconstruction_loss  # BASIC AE LOSS
 from utils import to_tensor  # TENSOR HELPER
 
@@ -126,7 +128,9 @@ def _alive_rows(X: np.ndarray, escape_r: float) -> np.ndarray:  # ALIVE MASK
 # ========================== AE PREDICTOR TRAINER ============================
 def train_autoencoder_predict_next_only(  # TRAIN AE AS X_N -> X_N+1
     X1, X2, *, latent_dim: int, epochs: int, batch_size: int, lr: float, device: torch.device,
-) -> tuple[Encoder, Decoder, list[float]]:
+    encoder: nn.Module | None = None,  # OPTIONAL: SWAP IN A DIFFERENT ARCHITECTURE
+    decoder: nn.Module | None = None,  # OPTIONAL: SWAP IN A DIFFERENT ARCHITECTURE
+) -> tuple[nn.Module, nn.Module, list[float]]:
     X1_list = [X1] if isinstance(X1, np.ndarray) else list(X1)  # WRAP
     X2_list = [X2] if isinstance(X2, np.ndarray) else list(X2)  # WRAP
 
@@ -136,8 +140,8 @@ def train_autoencoder_predict_next_only(  # TRAIN AE AS X_N -> X_N+1
         raise ValueError("AE PREDICTOR X1 AND X2 LISTS MUST HAVE SAME LENGTH")  # ERROR
 
     in_dim = int(X1_list[0].shape[1])  # INPUT DIM
-    enc = Encoder(in_dim, latent_dim).to(device)  # ENCODER
-    dec = Decoder(latent_dim, in_dim).to(device)  # DECODER
+    enc = (encoder if encoder is not None else Encoder(in_dim, latent_dim)).to(device)  # ENCODER
+    dec = (decoder if decoder is not None else Decoder(latent_dim, in_dim)).to(device)  # DECODER
 
     loss_fn = make_reconstruction_loss(0, beta=0.01, w_pow=1.0)  # MSE
     opt = torch.optim.Adam(list(enc.parameters()) + list(dec.parameters()), lr=lr)  # OPTIMIZER
@@ -341,7 +345,68 @@ def predict_future_snapshots_ae_predictor(
             X_t = to_tensor(x_np, device)  # FEED PREDICTION BACK
 
     return future.reshape(n_roll, H, W, 2 * d)  # RETURN xN+1...xN+T
+# ==================== AE ROLLOUT FROM START (VERIFICATION) ====================
+@torch.no_grad()  # NO GRAD
+def predict_rollout_from_start_ae_predictor(  # AE ROLLOUT FROM TRUE x1
+    td,
+    encoder,
+    decoder,
+    device,
+    *,
+    steps: int,
+    escape_r: float,
+    batch_size: int = 50000,
+) -> np.ndarray:  # AE x_2 ... x_{steps} FROM THE TRUE ANCHOR x_1
+    # START FROM x1 (TRUE FIRST STORED STATE -- z0=0 SO x1 = c IN ALL COMPONENTS)
+    # SAME CONVENTION AS mandelbrot_reconstruct.reconstruct_final_snapshot
+    if td.X_grid is None:  # NEED GRID
+        raise ValueError("AE ROLLOUT-FROM-START NEEDS td.X_grid")  # ERROR
 
+    feat_dim = int(td.X_grid.shape[-1])  # FEATURE DIM
+    d = int((feat_dim - 2) // 2)  # STATE DIM
+    H = int(td.X_grid.shape[1])  # HEIGHT
+    W = int(td.X_grid.shape[2])  # WIDTH
+    r = float(escape_r)  # R
+
+    n_roll = max(int(steps) - 1, 0)  # T-1 STEPS FROM x1 TO REACH x_{steps}
+
+    X_1 = td.X_grid[0].reshape(-1, feat_dim).astype(np.float32)  # TRUE x1
+    C = X_1[:, 2 * d:2 * d + 2].copy().astype(np.float32)  # C VALUES
+
+    P = int(X_1.shape[0])  # PIXELS
+    future = np.zeros((n_roll, P, 2 * d), dtype=np.float32)  # OUTPUT: x_2 .. x_{steps}
+
+    for i0 in range(0, P, int(batch_size)):  # BATCH LOOP
+        i1 = min(P, i0 + int(batch_size))  # END
+
+        X_t = to_tensor(X_1[i0:i1], device)  # START FROM TRUE x1
+        C_t = to_tensor(C[i0:i1], device)  # C
+
+        for s in range(n_roll):  # ROLL x1 -> x_{steps}
+            X_t = decoder(encoder(X_t))  # AE PREDICTS NEXT STATE
+            X_t[:, 2 * d] = C_t[:, 0]  # KEEP CR EXACT
+            X_t[:, 2 * d + 1] = C_t[:, 1]  # KEEP CI EXACT
+
+            x_np = X_t.detach().cpu().numpy().astype(np.float32)  # CPU
+            zr = x_np[:, 0:d]  # REAL
+            zi = x_np[:, d:2 * d]  # IMAG
+            mag = np.sqrt(np.maximum(zr * zr + zi * zi, 1e-30)).astype(np.float32)  # MAG
+            bad = (~np.isfinite(mag)) | (mag > r)  # ESCAPED
+
+            if np.any(bad):  # CLAMP, SAME AS THE DATA BUILDER
+                safe = np.where((mag > 0.0) & np.isfinite(mag), mag, 1.0).astype(np.float32)  # SAFE
+                scale = (r / safe).astype(np.float32)  # SCALE
+                x_np[:, 0:d] = np.where(bad, zr * scale, zr).astype(np.float32)  # CLAMP RE
+                x_np[:, d:2 * d] = np.where(bad, zi * scale, zi).astype(np.float32)  # CLAMP IM
+
+            x_np[:, 2 * d:2 * d + 2] = C[i0:i1]  # KEEP C EXACT
+
+            future[s, i0:i1, 0:d] = x_np[:, 0:d]  # SAVE RE
+            future[s, i0:i1, d:2 * d] = x_np[:, d:2 * d]  # SAVE IM
+
+            X_t = to_tensor(x_np, device)  # FEED PREDICTION BACK
+
+    return future.reshape(n_roll, H, W, 2 * d)  # RETURN x_2 ... x_{steps}
 @torch.no_grad()  # NO GRAD
 def teacher_forced_escape_iters_ae_predictor(td, encoder, decoder, device, escape_r: float, batch_size: int = 50000) -> np.ndarray:  # ONE-STEP PRED FRACTAL
     # AT EACH TRUE STATE x_t PREDICT x_{t+1} WITH THE AE; RECORD FIRST PREDICTED ESCAPE (NO COMPOUNDING)
@@ -522,14 +587,28 @@ def run_ae_only_single(device: torch.device) -> None:  # RUN AE-ONLY ON ONE MATR
     save_ground_truth_escape_iters(td, D.ESCAPE_R, dirs["td"] / "gt_escape_iters.png")  # GT FRACTAL
     save_ground_truth_final_mask(td, D.ESCAPE_R, dirs["td"] / "gt_final_mask.png", scale=D.IMAGE_SCALE)  # GT MASK
 
-    enc, dec, losses = train_autoencoder_predict_next_only(  # TRAIN AE PREDICTOR
-        td.X1, td.X2,
+    train_kwargs = dict(  # SHARED TRAIN KWARGS
         latent_dim=int(getattr(D, "AE_PRED_LATENT_DIM", D.LATENT_DIM)),  # BIGGER LATENT
         epochs=int(getattr(D, "AE_PRED_EPOCHS", getattr(D, "AE_ONLY_EPOCHS", D.AE_EPOCHS))),  # EPOCHS
         batch_size=int(getattr(D, "AE_ONLY_BATCH_SIZE", D.AE_BATCH_SIZE)),  # BATCH
         lr=float(getattr(D, "AE_ONLY_LR", D.AE_LR)),  # LR
         device=device,
     )
+    if bool(getattr(D, "AE_USE_QUADRATIC_PREDICTOR", False)):  # TOGGLE IN defines.py
+        state_dim = int(td.meta["state_dim"])  # d, ALREADY SAVED BY THE DATA BUILDER
+        q_enc, q_dec = make_quadratic_predictor_pair(  # BUILD (encoder, decoder) PAIR
+            state_dim, rank=getattr(D, "AE_QUADRATIC_RANK", None),
+        )
+        enc, dec, losses = train_autoencoder_predict_next_only(  # TRAIN AE PREDICTOR
+            td.X1, td.X2, encoder=q_enc, decoder=q_dec, **train_kwargs,
+        )
+
+        plot_learned_vs_true_matrix_spectrum(  # CHECK LEARNED A vs TRUE A
+            A, q_enc.A.weight, dirs["res"] / "quadratic_A_spectrum.png",
+        )
+    else:  # DEFAULT: EXISTING Encoder/Decoder MLP
+        enc, dec, losses = train_autoencoder_predict_next_only(td.X1, td.X2, **train_kwargs)  # TRAIN AE PREDICTOR
+
     save_loss_curve(losses, dirs["res"] / "loss_curve.png", "AE Predictor Single Matrix Loss")  # LOSS
 
     # FUTURE PREDICTION xN+1 ... xN+T
@@ -582,7 +661,51 @@ def run_ae_only_single(device: torch.device) -> None:  # RUN AE-ONLY ON ONE MATR
         all_metrics[f"pred_rel_l2_xn_plus_{step:03d}"] = float(pred_m["pred_rel_l2"])  # SAVE REL
         all_metrics[f"pred_fit_xn_plus_{step:03d}"] = float(pred_m["pred_fit"])  # SAVE FIT
 
-    write_metrics_txt(dirs["res"] / "metrics.txt", all_metrics)  # SAVE
+        # ============================================================
+        # NEW, SERIOUS TESTS: ROLL THE AE FORWARD FROM x1 (TRUE z0=0 ANCHOR)
+        # THROUGH THE KNOWN TRAJECTORY, SO EVERY STEP HAS A REAL x_t TO CHECK
+        # AGAINST -- NO ORACLE NEEDED.
+        # ============================================================
+        maxit = int(D.TRAIN_MAX_ITERS)  # T
+        rollout = predict_rollout_from_start_ae_predictor(  # ONE ROLLOUT SERVES BOTH TESTS BELOW
+            td, enc, dec, device, steps=maxit, escape_r=D.ESCAPE_R,
+        )  # rollout[s] = AE PREDICTION OF x_{s+2}, s = 0 .. maxit-2
+
+        # ---- TEST 1: MACRO / EYEBALL -----------------------------------
+        Z_pred_final = rollout[-1]  # AE's PREDICTED x_{maxit}
+        Z_true_final = td.X_grid[-1]  # TRUE x_{maxit} (SAME ARRAY AS gt_final_mask.png)
+
+        save_final_snapshot_image(Z_pred_final, escape_r=D.ESCAPE_R,
+                                  out_png=dirs["res"] / "rollout_from_start_final_mask.png",
+                                  mode="mask")  # COMPARE VS gt_final_mask.png
+        save_final_snapshot_image(Z_pred_final, escape_r=D.ESCAPE_R,
+                                  out_png=dirs["res"] / "rollout_from_start_final_mag.png", mode="mag")
+
+        final_m = next_step_prediction_metrics(Z_pred_final, Z_true_final)  # QUANTIFY THE EYEBALL TEST TOO
+        print_metric_block(f"AE ROLLOUT FROM x1 -> x{maxit} (MACRO)", final_m)  # PRINT
+        all_metrics.update({f"rollout_final_{key}": val for key, val in final_m.items()})  # SAVE
+
+        # ---- TEST 2: QUANTITATIVE ---------------------------------------
+        n_check = min(int(getattr(D, "PREDICT_ROLLOUT_CHECK_STEPS", 10)), rollout.shape[0])  # HOW MANY TO CHECK
+        rollout_rel_l2: list[float] = []  # FOR THE CURVE PLOT
+
+        for s in range(n_check):  # s AE STEPS BEYOND x1 -> COMPARES TO x_{s+2}
+            true_iter = s + 2  # WHICH TRUE ITERATE THIS IS
+            Z_pred_s = rollout[s]  # AE PREDICTION OF x_{true_iter}
+            Z_true_s = td.X_grid[s + 1]  # TRUE x_{true_iter}, ALREADY IN X_grid
+
+            m_s = next_step_prediction_metrics(Z_pred_s, Z_true_s)  # rel_l2, mse, fit
+            print_metric_block(f"AE ROLLOUT FROM x1, {s + 1} STEP(S) IN (x{true_iter})", m_s)  # PRINT
+
+            all_metrics[f"rollout_rel_l2_step_{s + 1:03d}"] = float(m_s["pred_rel_l2"])  # SAVE
+            rollout_rel_l2.append(float(m_s["pred_rel_l2"]))  # COLLECT
+
+        save_loss_curve(  # REUSE THE LOSS-CURVE PLOTTER FOR A rel_l2-VS-STEP PLOT
+            rollout_rel_l2, dirs["res"] / "rollout_rel_l2_vs_step.png",
+            "AE Rollout Relative L2 Error vs Steps Beyond x1",
+        )
+
+        write_metrics_txt(dirs["res"] / "metrics.txt", all_metrics)  # SAVE
 
 
 # =============================== AE-ONLY-MULTI =============================
