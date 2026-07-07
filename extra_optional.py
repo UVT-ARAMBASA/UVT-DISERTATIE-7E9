@@ -672,9 +672,10 @@ def run_ae_only_single(device: torch.device) -> None:  # RUN AE-ONLY ON ONE MATR
         )  # rollout[s] = AE PREDICTION OF x_{s+2}, s = 0 .. maxit-2
 
         # ---- TEST 1: MACRO / EYEBALL -----------------------------------
-        Z_pred_final = rollout[-1]  # AE's PREDICTED x_{maxit}
-        Z_true_final = td.X_grid[-1]  # TRUE x_{maxit} (SAME ARRAY AS gt_final_mask.png)
+        d_state = int((int(td.X_grid.shape[-1]) - 2) // 2)  # td.X_grid HAS +2 C CHANNELS, rollout DOES NOT
 
+        Z_pred_final = rollout[-1]  # AE's PREDICTED x_{maxit}
+        Z_true_final = td.X_grid[-1][..., :2 * d_state]  # DROP TRAILING C SO SHAPES MATCH
         save_final_snapshot_image(Z_pred_final, escape_r=D.ESCAPE_R,
                                   out_png=dirs["res"] / "rollout_from_start_final_mask.png",
                                   mode="mask")  # COMPARE VS gt_final_mask.png
@@ -692,7 +693,7 @@ def run_ae_only_single(device: torch.device) -> None:  # RUN AE-ONLY ON ONE MATR
         for s in range(n_check):  # s AE STEPS BEYOND x1 -> COMPARES TO x_{s+2}
             true_iter = s + 2  # WHICH TRUE ITERATE THIS IS
             Z_pred_s = rollout[s]  # AE PREDICTION OF x_{true_iter}
-            Z_true_s = td.X_grid[s + 1]  # TRUE x_{true_iter}, ALREADY IN X_grid
+            Z_true_s = td.X_grid[s + 1][..., :2 * d_state]  # DROP TRAILING C SO SHAPES MATCH
 
             m_s = next_step_prediction_metrics(Z_pred_s, Z_true_s)  # rel_l2, mse, fit
             print_metric_block(f"AE ROLLOUT FROM x1, {s + 1} STEP(S) IN (x{true_iter})", m_s)  # PRINT

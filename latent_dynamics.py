@@ -6,11 +6,16 @@ class DMDDynamics:  # DMD CLASS
         self.A = None  # DMD MATRIX
         self.device = device  # STORE DEVICE
 
-    def fit(self, Z1, Z2):  # FIT DMD MODEL
-        Z1_t = torch.tensor(Z1, dtype=torch.float32, device=self.device)  # TO TENSOR ON DEVICE
-        Z2_t = torch.tensor(Z2, dtype=torch.float32, device=self.device)  # TO TENSOR ON DEVICE
-        self.A = Z2_t.T @ torch.linalg.pinv(Z1_t.T)  # DMD FORMULA A = Z2 * Z1^+
-        return self.A  # RETURN MATRIX
+    def fit(self, Z1, Z2, ridge: float = 1e-2):  # FIT DMD MODEL, RIDGE-REGULARISED
+        Z1_t = torch.tensor(Z1, dtype=torch.float32, device=self.device)
+        Z2_t = torch.tensor(Z2, dtype=torch.float32, device=self.device)
+        N = Z1_t.shape[0]  # NUMBER OF SNAPSHOT PAIRS
+        G = (Z1_t.T @ Z1_t) / N  # MEAN, NOT SUM -- KEEPS ridge MEANINGFUL AT ANY DATASET SIZE
+        H = (Z1_t.T @ Z2_t) / N
+        eye = torch.eye(G.shape[0], dtype=G.dtype, device=G.device)
+        A_t = torch.linalg.solve(G + ridge * eye, H)
+        self.A = A_t.T
+        return self.A
 
     def predict(self, z0, steps=20):  # PREDICT FUTURE STATES
         preds = []  # STORE PREDICTIONS
@@ -24,5 +29,3 @@ class DMDDynamics:  # DMD CLASS
             preds.append(z.clone())  # SAVE STEP OUTPUT
 
         return torch.stack(preds)  # STACK OVER TIME
-
-
