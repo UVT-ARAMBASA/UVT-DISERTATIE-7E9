@@ -8,15 +8,15 @@ import torch  # TORCH CORE
 from latent_dynamics import DMDDynamics  # YOUR DMD CLASS
 
 # =============================== FITTING =====================================
-def fit_dmd_on_arrays(X1: np.ndarray, X2: np.ndarray, *, device: torch.device) -> DMDDynamics:  # FIT DMD
+def fit_dmd_on_arrays(X1: np.ndarray, X2: np.ndarray, *, device: torch.device, ridge: float = 1e-2) -> DMDDynamics:  # FIT DMD
     dmd = DMDDynamics(device=device)  # INIT MODEL
-    dmd.fit(X1, X2)  # RUN FIT
+    dmd.fit(X1, X2, ridge=ridge)  # RUN FIT
+    assert dmd.A is not None, "DMDDynamics.fit did not set self.A"  # FAIL HERE, NOT 3 LINES LATER
     return dmd  # RETURN FITTED
 
 # ============================== PREDICTION ===================================
 @torch.no_grad()  # DISABLE GRADS
 def predict_orbit(dmd: DMDDynamics, z0: torch.Tensor, *, steps: int) -> torch.Tensor:  # PREDICT TRAJ
-    # returns (steps, dim)  # OUTPUT SHAPE NOTE
     return dmd.predict(z0, steps=steps)  # CALL PREDICT
 
 # =============================== EXPORT ======================================
@@ -36,7 +36,7 @@ def fit_dmd_from_latent_covariances(  # FIT FROM STREAMED COVS
     *,
     device: torch.device,  # DEVICE
 ) -> DMDDynamics:
-    A_t = np.linalg.solve(G + 1e-2 * np.eye(G.shape[0], dtype=G.dtype), H) # RIDGED SOLVE
+    A_t = np.linalg.solve(G + 1e-2 * np.eye(G.shape[0], dtype=G.dtype), H)  # RIDGED SOLVE
     dmd = DMDDynamics(device=device)  # INIT
     dmd.A = torch.tensor(A_t.T, dtype=torch.float32, device=device)  # STORE A
     return dmd  # RETURN
