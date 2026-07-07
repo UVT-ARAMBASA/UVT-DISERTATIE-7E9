@@ -21,6 +21,7 @@ from eval_matrix_dmd_ae import (  # EVAL HELPERS
     iterate_true_next_snapshot,
     predict_next_snapshot,
     next_step_prediction_metrics,
+    predict_rollout_from_start_ae_dmd,
     teacher_forced_escape_iters,
 )
 from mandelbrot_reconstruct import save_final_snapshot_image, save_escape_image  # IMAGE SAVERS
@@ -89,7 +90,9 @@ def run_single_matrix(device: torch.device | None = None) -> None:  # RUN SINGLE
         Z1 = enc(to_tensor(td.X1, device)).detach().cpu().numpy()  # ENCODE X1
         Z2 = enc(to_tensor(td.X2, device)).detach().cpu().numpy()  # ENCODE X2
 
-    dmd = fit_dmd_on_arrays(Z1, Z2, device=device)  # FIT DMD IN LATENT SPACE
+    #dmd = fit_dmd_on_arrays(Z1, Z2, device=device)  # FIT DMD IN LATENT SPACE
+    #v33
+    dmd = fit_dmd_on_arrays(Z1, Z2, device=device, ridge=D.DMD_RIDGE)  # FIT DMD IN LATENT SPACE
     rho = float(np.max(np.abs(np.linalg.eigvals(dmd.A.detach().cpu().numpy()))))  # SPECTRAL RADIUS
     print("SINGLE DMD SPECTRAL RADIUS:", rho)  # PRINT
 
@@ -116,6 +119,48 @@ def run_single_matrix(device: torch.device | None = None) -> None:  # RUN SINGLE
     iters_pred = teacher_forced_escape_iters(td, enc, dec, dmd, device, escape_r=D.ESCAPE_R)  # PRED FRACTAL
     save_escape_image(iters_pred, max_iters=int(td.X_grid.shape[0]), out_png=dirs["res"] / "pred_escape_iters.png")  # SAVE FRACTAL
 
+    #------V33
+    maxit = int(D.TRAIN_MAX_ITERS)
+    rollout = predict_rollout_from_start_ae_dmd(
+        td, enc, dec, dmd, device, steps=maxit, escape_r=D.ESCAPE_R,
+    )  # rollout[s] = AE+DMD PREDICTION OF x_{s+2}, s = 0 .. maxit-2
+
+    # ---- TEST 1: MACRO / EYEBALL -----------------------------------
+    d_state = int((int(td.X_grid.shape[-1]) - 2) // 2)  # td.X_grid HAS +2 C CHANNELS, rollout DOES NOT
+
+    Z_pred_final = rollout[-1]  # (H,W,2d)
+    Z_true_final = td.X_grid[-1][..., :2 * d_state]  # DROP TRAILING C SO SHAPES MATCH
+
+    save_final_snapshot_image(Z_pred_final, escape_r=D.ESCAPE_R,
+                              out_png=dirs["res"] / "rollout_from_start_final_mask.png",
+                              mode="mask")
+    save_final_snapshot_image(Z_pred_final, escape_r=D.ESCAPE_R,
+                              out_png=dirs["res"] / "rollout_from_start_final_mag.png", mode="mag")
+
+    rollout_final_m = next_step_prediction_metrics(Z_pred_final, Z_true_final)
+    print_metric_block(f"SINGLE MATRIX AE+DMD ROLLOUT x1 -> x{maxit} (MACRO)", rollout_final_m)
+
+    # ---- TEST 2: QUANTITATIVE ---------------------------------------
+    n_check = min(int(getattr(D, "PREDICT_ROLLOUT_CHECK_STEPS", 10)), rollout.shape[0])
+    rollout_rel_l2: list[float] = []
+    rollout_step_metrics: dict = {}
+
+    for s in range(n_check):
+        true_iter = s + 2
+        Z_pred_s = rollout[s]  # (H,W,2d)
+        Z_true_s = td.X_grid[s + 1][..., :2 * d_state]  # DROP TRAILING C SO SHAPES MATCH
+
+        m_s = next_step_prediction_metrics(Z_pred_s, Z_true_s)
+        print_metric_block(f"SINGLE MATRIX AE+DMD ROLLOUT, {s + 1} STEP(S) IN (x{true_iter})", m_s)
+
+        rollout_step_metrics[f"rollout_rel_l2_step_{s + 1:03d}"] = float(m_s["pred_rel_l2"])
+        rollout_rel_l2.append(float(m_s["pred_rel_l2"]))
+
+    save_loss_curve(
+        rollout_rel_l2, dirs["res"] / "rollout_rel_l2_vs_step.png",
+        "AE+DMD Rollout Relative L2 Error vs Steps Beyond x1",
+    )
+
     # -------------------------------- METRICS -------------------------------
     ae_m = autoencoder_reconstruction_metrics(enc, dec, td.X, device)  # RECON METRICS
     dmd_m = dmd_one_step_metrics(enc, dec, dmd, td.X1, td.X2, device)  # ONE-STEP TEACHER-FORCED METRICS
@@ -124,7 +169,13 @@ def run_single_matrix(device: torch.device | None = None) -> None:  # RUN SINGLE
     print_metric_block("SINGLE MATRIX DMD (ONE-STEP)", dmd_m)  # PRINT
     print_metric_block(f"SINGLE MATRIX PREDICT (+{k} FROM TRUE xT)", pred_m)  # PRINT
 
-    metrics = {**ae_m, **dmd_m, **pred_m, "predict_extra_steps": float(k), "dmd_spectral_radius": rho}  # MERGE
+    #metrics = {**ae_m, **dmd_m, **pred_m, "predict_extra_steps": float(k), "dmd_spectral_radius": rho}  # MERGE
+    metrics = {
+        **ae_m, **dmd_m, **pred_m,
+        "predict_extra_steps": float(k), "dmd_spectral_radius": rho,
+        **{f"rollout_final_{key}": val for key, val in rollout_final_m.items()},
+        **rollout_step_metrics,
+    }  # MERGE
     write_metrics_txt(dirs["res"] / "metrics.txt", metrics)  # SAVE METRICS
 
 
