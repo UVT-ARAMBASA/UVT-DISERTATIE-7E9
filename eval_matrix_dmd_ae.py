@@ -9,16 +9,50 @@ from PIL import Image  # PIL
 import matplotlib.pyplot as plt  # PLOT
 
 from utils import to_tensor  # HELPER
+import defines as D  # DEFAULT FOR log_scale
 
 # ============================== LOSS CURVE ===================================
-def save_loss_curve(losses: list[float], out_png: str | Path, title: str) -> str:  # SAVE LOSS
+def save_loss_curve(  # SAVE LOSS
+    losses: list[float],
+    out_png: str | Path,
+    title: str,
+    xlabel: str = "Epoch",
+    ylabel: str = "Loss",
+    *,
+    log_scale: bool | None = None,  # None = USE defines.LOSS_CURVES_LOG_SCALE
+    extra_series: dict[str, list[float]] | None = None,  # NEW: E.G. {"Validation": val_losses}
+    primary_label: str | None = None,  # NEW: LEGEND LABEL FOR `losses` (ONLY SHOWN IF extra_series GIVEN)
+) -> str:
     out_png = Path(out_png)  # PATH
     out_png.parent.mkdir(parents=True, exist_ok=True)  # MKDIR
 
+    if log_scale is None:  # USE PROJECT DEFAULT
+        log_scale = bool(getattr(D, "LOSS_CURVES_LOG_SCALE", True))  # DEFAULT
+
+    xs = np.arange(1, len(losses) + 1)  # EPOCH AXIS
+    ys = np.asarray(losses, dtype=np.float32)  # CURVE
+
     plt.figure()  # FIG
-    plt.plot(np.arange(1, len(losses) + 1), np.asarray(losses, dtype=np.float32))  # CURVE
-    plt.xlabel("Epoch")  # X
-    plt.ylabel("Loss")  # Y
+    plot_fn = plt.semilogy if log_scale else plt.plot  # LOG OR LINEAR
+
+    label = primary_label if extra_series else None  # ONLY LABEL IF THERE'S A LEGEND TO SHOW
+    if log_scale:  # semilogy SILENTLY DROPS <= 0 VALUES -- CLIP INSTEAD OF HIDING THEM
+        ys_plot = np.where(ys > 0, ys, np.nan)  # NON-POSITIVE -> GAP, NOT A CRASH
+        plot_fn(xs, ys_plot, label=label)  # CURVE
+    else:
+        plot_fn(xs, ys, label=label)  # CURVE
+
+    if extra_series:  # NEW: OVERLAY EXTRA CURVES (E.G. VALIDATION LOSS)
+        for name, series in extra_series.items():  # EACH EXTRA CURVE
+            series = np.asarray(series, dtype=np.float32)  # ARRAY
+            xs_e = np.arange(1, len(series) + 1)  # ITS OWN X AXIS (SAME LENGTH, USUALLY)
+            if log_scale:  # SAME NaN-GAP TREATMENT
+                series = np.where(series > 0, series, np.nan)  # SKIP NON-POSITIVE
+            plot_fn(xs_e, series, label=name)  # OVERLAY
+        plt.legend()  # SHOW LEGEND ONLY WHEN THERE'S >1 SERIES
+
+    plt.xlabel(xlabel)  # X
+    plt.ylabel(ylabel)  # Y
     plt.title(title)  # TITLE
     plt.tight_layout()  # TIGHT
     plt.savefig(out_png, dpi=200)  # SAVE
@@ -27,28 +61,114 @@ def save_loss_curve(losses: list[float], out_png: str | Path, title: str) -> str
 
 # =============================== METRICS =====================================
 @torch.no_grad()  # NO GRAD
-def autoencoder_reconstruction_metrics(encoder, decoder, X: np.ndarray, device: torch.device) -> dict:  # AE METRICS
-    x = to_tensor(X, device)  # TO TENSOR
-    xh = decoder(encoder(x))  # RECON
-    xh_np = xh.detach().cpu().numpy().astype(np.float32)  # CPU
+def autoencoder_reconstruction_metrics(encoder, decoder, X: np.ndarray, device: torch.device, batch_size: int = 50000) -> dict:  # AE METRICS
+    N = int(X.shape[0])  # ROWS
+    sse = 0.0  # SUM SQ ERROR
+    sq_true = 0.0  # SUM SQ TRUE
 
-    err = xh_np - X.astype(np.float32)  # ERR
-    mse = float(np.mean(err * err))  # MSE
-    rel_l2 = float(np.linalg.norm(err) / max(np.linalg.norm(X), 1e-12))  # REL
+    for i0 in range(0, N, int(batch_size)):  # BATCH LOOP
+        i1 = min(N, i0 + int(batch_size))  # END
+        xb = to_tensor(X[i0:i1], device)  # TO TENSOR
+        xh_np = decoder(encoder(xb)).detach().cpu().numpy().astype(np.float32)  # RECON
+        err = xh_np - X[i0:i1].astype(np.float32)  # ERR
+        sse += float(np.sum(err * err))  # ACCUM
+        sq_true += float(np.sum(X[i0:i1].astype(np.float32) ** 2))  # ACCUM
+
+    mse = sse / max(N * X.shape[1], 1)  # MSE
+    rel_l2 = float(np.sqrt(sse) / max(np.sqrt(sq_true), 1e-12))  # REL
     fit = float(1.0 - rel_l2)  # FIT
     return {"ae_mse": mse, "ae_rel_l2": rel_l2, "ae_fit": fit}  # RETURN
 
-@torch.no_grad()  # NO GRAD
-def dmd_one_step_metrics(encoder, decoder, dmd, X1: np.ndarray, X2: np.ndarray, device: torch.device) -> dict:  # DMD ONE STEP
-    x1 = to_tensor(X1, device)  # LEFT
-    z1 = encoder(x1)  # ENC
-    z2h = dmd.predict(z1, steps=1)[-1]  # ONE STEP
-    x2h = decoder(z2h)  # DEC
+# ========================= NEW: ALIVE-ROW MASK / ALIVE-ONLY AE METRICS =======
+def _alive_row_mask(X: np.ndarray, escape_r: float) -> np.ndarray:  # PER-ROW HEURISTIC (FALLBACK ONLY, SEE ABOVE)
+    X = np.asarray(X, dtype=np.float32)  # ARRAY
+    feat_dim = int(X.shape[1])  # FEAT
+    d = int((feat_dim - 2) // 2)  # STATE DIM
 
-    x2h_np = x2h.detach().cpu().numpy().astype(np.float32)  # CPU
-    err = x2h_np - X2.astype(np.float32)  # ERR
-    mse = float(np.mean(err * err))  # MSE
-    rel_l2 = float(np.linalg.norm(err) / max(np.linalg.norm(X2), 1e-12))  # REL
+    zr = X[:, 0:d]  # REAL
+    zi = X[:, d:2 * d]  # IMAG
+
+    mag2 = zr * zr + zi * zi  # MAG2
+    max_mag2 = np.max(np.where(np.isfinite(mag2), mag2, np.inf), axis=1)  # MAX
+
+    finite = np.isfinite(zr).all(axis=1) & np.isfinite(zi).all(axis=1)  # FINITE
+    alive = finite & (max_mag2 < 0.999 * float(escape_r) * float(escape_r))  # STRICTLY INSIDE
+
+    return alive  # RETURN
+
+
+def _exact_trained_row_mask(td) -> np.ndarray:  # EXACT ROW MASK OVER td.X, MATCHING X1/X2 MEMBERSHIP
+    """Boolean mask over td.X's (T*P,) rows that is True EXACTLY for rows
+    belonging to a grid point kept in X1/X2 -- i.e. td.meta["alive_mask_grid"]
+    tiled across every stored time step -- rather than a per-row magnitude
+    approximation. Exact when keep_escaped_fraction == 0.0 (the default: see
+    alive_mask_grid's own docstring for the >0 case). Falls back to the
+    per-row heuristic if td doesn't carry what's needed to build the exact
+    mask (e.g. a differently-shaped custom td).
+    """
+    meta = getattr(td, "meta", None) or {}  # META DICT
+    alive_grid = meta.get("alive_mask_grid", None)  # (H,W) BOOL, PER GRID POINT
+    T = meta.get("max_iters", None)  # HOW MANY STORED TIME STEPS
+
+    if alive_grid is None or T is None:  # CAN'T BUILD THE EXACT MASK
+        classify_r = float(meta.get("classify_r", 2.0))  # BEST-EFFORT FALLBACK
+        return _alive_row_mask(td.X, classify_r)  # APPROXIMATION
+
+    alive_flat = np.asarray(alive_grid, dtype=bool).reshape(-1)  # (P,)
+    P = int(alive_flat.shape[0])  # GRID POINT COUNT
+    T = int(T)  # STEPS
+
+    if int(td.X.shape[0]) != T * P:  # SHAPE GUARD -- td.X MUST BE (T*P, feat), t-MAJOR
+        classify_r = float(meta.get("classify_r", 2.0))  # BEST-EFFORT FALLBACK
+        return _alive_row_mask(td.X, classify_r)  # APPROXIMATION
+
+    # td.X IS X_tp.reshape(T*P, feat) -- t VARIES SLOWEST, p VARIES FASTEST
+    # WITHIN EACH t-BLOCK (SEE prepare_training_data.py) -- SO TILING THE
+    # (P,)-LENGTH alive_flat T TIMES LINES UP EXACTLY WITH td.X's ROW ORDER.
+    return np.tile(alive_flat, T)  # (T*P,) EXACT MASK
+
+
+@torch.no_grad()  # NO GRAD
+def autoencoder_reconstruction_metrics_alive(  # AE METRICS, EXACTLY-TRAINED-ON ROWS ONLY
+    encoder, decoder, td, device: torch.device, batch_size: int = 50000,
+) -> dict:
+    X = np.asarray(td.X)  # FULL GRID ARRAY
+    mask = _exact_trained_row_mask(td)  # EXACT (OR BEST-EFFORT) MEMBERSHIP
+    n_alive = int(np.count_nonzero(mask))  # HOW MANY
+
+    if n_alive == 0:  # NOTHING TO SCORE (SHOULDN'T HAPPEN IF TRAINING SUCCEEDED)
+        return {  # NaN RATHER THAN A MISLEADING 0/1
+            "ae_alive_mse": float("nan"), "ae_alive_rel_l2": float("nan"), "ae_alive_fit": float("nan"),
+            "ae_alive_n": 0.0, "ae_alive_n_total": float(X.shape[0]),
+        }
+
+    base = autoencoder_reconstruction_metrics(encoder, decoder, X[mask], device, batch_size=batch_size)  # REUSE
+    return {  # RENAME + ADD COUNTS
+        "ae_alive_mse": base["ae_mse"],
+        "ae_alive_rel_l2": base["ae_rel_l2"],
+        "ae_alive_fit": base["ae_fit"],
+        "ae_alive_n": float(n_alive),
+        "ae_alive_n_total": float(X.shape[0]),
+    }
+
+@torch.no_grad()  # NO GRAD
+def dmd_one_step_metrics(encoder, decoder, dmd, X1: np.ndarray, X2: np.ndarray, device: torch.device, batch_size: int = 50000) -> dict:  # DMD ONE STEP
+    N = int(X1.shape[0])  # ROWS
+    sse = 0.0  # SUM SQ ERROR
+    sq_true = 0.0  # SUM SQ TRUE
+
+    for i0 in range(0, N, int(batch_size)):  # BATCH LOOP
+        i1 = min(N, i0 + int(batch_size))  # END
+        x1b = to_tensor(X1[i0:i1], device)  # LEFT
+        z1 = encoder(x1b)  # ENC
+        z2h = dmd.predict(z1, steps=1)[-1]  # ONE STEP
+        x2h_np = decoder(z2h).detach().cpu().numpy().astype(np.float32)  # DEC
+        err = x2h_np - X2[i0:i1].astype(np.float32)  # ERR
+        sse += float(np.sum(err * err))  # ACCUM
+        sq_true += float(np.sum(X2[i0:i1].astype(np.float32) ** 2))  # ACCUM
+
+    mse = sse / max(N * X1.shape[1], 1)  # MSE
+    rel_l2 = float(np.sqrt(sse) / max(np.sqrt(sq_true), 1e-12))  # REL
     fit = float(1.0 - rel_l2)  # FIT
     return {"dmd_mse": mse, "dmd_rel_l2": rel_l2, "dmd_fit": fit}  # RETURN
 

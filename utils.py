@@ -134,3 +134,4 @@ def show_image(path: str) -> None:
     """Open image in OS viewer (works fine from PyCharm run)."""
     from PIL import Image
     Image.open(path).show()
+

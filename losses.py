@@ -2,6 +2,7 @@
 from __future__ import annotations  # ENABLE MODERN TYPE HINTS
 
 # #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=# IMPORTS #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=#
+import numpy as np  # NUMPY (FOR compute_target_scale ON RAW ARRAYS)
 import torch  # TORCH
 import torch.nn.functional as F  # TORCH FUNCTIONAL LOSSES
 from tensor_diagnostics import check_tensor
@@ -99,6 +100,26 @@ def fit_batch_dmd_matrix(
     H = z1.T @ z2
     A_t = torch.linalg.solve(G + ridge * eye, H)
     return A_t.T
+def compute_target_scale(*arrays_or_tensors, eps: float = 1e-12) -> float:  # DATA-SCALE FOR LOSS NORMALISATION
+    """MEAN SQUARED MAGNITUDE ACROSS THE GIVEN ARRAYS/TENSORS.
+    """
+    total = 0.0  # SUM OF SQUARES
+    count = 0  # ELEMENT COUNT
+    for arr in arrays_or_tensors:  # LOOP INPUTS
+        if arr is None:  # SKIP
+            continue
+        if isinstance(arr, torch.Tensor):  # TORCH
+            total += float(torch.sum(arr.detach() ** 2).cpu())  # ACCUM
+            count += int(arr.numel())  # ACCUM
+        else:  # NUMPY / ARRAY-LIKE
+            a = np.asarray(arr, dtype=np.float64) if not isinstance(arr, np.ndarray) else arr  # NP
+            total += float(np.sum(a.astype(np.float64) ** 2))  # ACCUM
+            count += int(a.size)  # ACCUM
+    if count == 0:  # NOTHING GIVEN
+        return 1.0  # NEUTRAL SCALE
+    return max(total / count, eps)  # MEAN SQUARE, FLOORED
+
+
 # #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=# KOOPMAN AE LOSS #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=#
 def koopman_ae_loss(  # AUTOENCODER + LATENT DMD LOSS
     x1: torch.Tensor,  # TRUE STATE AT TIME T
@@ -113,6 +134,7 @@ def koopman_ae_loss(  # AUTOENCODER + LATENT DMD LOSS
     alpha_lin: float = 0.5,  # LATENT DMD WEIGHT
     alpha_pred: float = 2.0,  # DECODED PREDICTION WEIGHT
     ridge: float = 1e-6,  # DMD RIDGE
+    scale: float = 1.0,  # DIVIDE THE WHOLE LOSS BY THIS (SEE compute_target_scale) -- 1.0 = OLD RAW-MSE BEHAVIOUR
 ):
     A = fit_batch_dmd_matrix(z1, z2, ridge=ridge)  # FIT BATCH DMD MATRIX
 
@@ -123,7 +145,9 @@ def koopman_ae_loss(  # AUTOENCODER + LATENT DMD LOSS
     loss_lin = base_loss(z2_pred, z2)  # LATENT LINEAR DMD LOSS
     loss_pred = base_loss(x2_pred, x2)  # FINAL PREDICTION LOSS
 
-    loss_total = (  # TOTAL LOSS
+    inv_scale = 1.0 / max(float(scale), 1e-12)  # GUARD DIV0
+
+    loss_total = inv_scale * (  # TOTAL LOSS, SCALE-NORMALISED
         alpha_rec * loss_rec  # ADD RECONSTRUCTION
         + alpha_lin * loss_lin  # ADD LATENT LINEARITY
         + alpha_pred * loss_pred  # ADD FINAL PREDICTION
@@ -131,9 +155,10 @@ def koopman_ae_loss(  # AUTOENCODER + LATENT DMD LOSS
 
     loss_info = {  # DICTIONARY FOR PRINTING
         "total": float(loss_total.detach().cpu()),  # TOTAL LOSS
-        "rec": float(loss_rec.detach().cpu()),  # RECONSTRUCTION LOSS
-        "lin": float(loss_lin.detach().cpu()),  # LATENT LINEAR LOSS
-        "pred": float(loss_pred.detach().cpu()),  # PREDICTION LOSS
+        "rec": float(loss_rec.detach().cpu()),  # RECONSTRUCTION LOSS (RAW, NOT SCALE-NORMALISED)
+        "lin": float(loss_lin.detach().cpu()),  # LATENT LINEAR LOSS (RAW)
+        "pred": float(loss_pred.detach().cpu()),  # PREDICTION LOSS (RAW)
+        "scale": float(scale),  # WHAT WE DIVIDED BY
     }
 
     return loss_total, loss_info  # RETURN LOSS AND INFO

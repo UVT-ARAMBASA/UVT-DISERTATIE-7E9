@@ -8,12 +8,13 @@ import torch  # TORCH
 import defines as D  # DEFINES
 from utils import save_model, to_tensor  # HELPERS
 from data_loader import load_one_A_matrix  # TRUE MATRIX FOR GROUND-TRUTH NEXT STEP
-from prepare_training_data import build_matrix_c_grid_training_data, save_training_npz  # DATA
+from prepare_training_data import build_matrix_c_grid_training_data, save_training_npz, determine_escape_radius  # DATA
 from train_autoencoder import train_autoencoder  # AE TRAINING
 from apply_dmd import fit_dmd_on_arrays  # DMD FIT
 from eval_matrix_dmd_ae import (  # EVAL HELPERS
     save_loss_curve,
     autoencoder_reconstruction_metrics,
+    autoencoder_reconstruction_metrics_alive,  # NEW: THE APPLES-TO-APPLES AE NUMBER
     dmd_one_step_metrics,
     save_ground_truth_final_mask,
     save_ground_truth_escape_iters,
@@ -49,6 +50,17 @@ def run_single_matrix(device: torch.device | None = None) -> None:  # RUN SINGLE
     # ------------------------------- BUILD DATA -----------------------------
     A = load_one_A_matrix(D.A_DATA_DIR, source=D.SINGLE_MATRIX_SOURCE, index=D.SINGLE_MATRIX_INDEX)  # TRUE MATRIX
 
+    # NEW: PRINT fikl's PRINCIPLED, MATRIX-DEPENDENT ESCAPE RADIUS NEXT TO THE
+    # FIXED D.ESCAPE_R WE ACTUALLY CLASSIFY WITH -- SEE THE NOTE IN defines.py.
+    # PURELY INFORMATIONAL, DOESN'T CHANGE ANY BEHAVIOUR.
+    try:
+        principled_r = determine_escape_radius(A)  # fikl's FORMULA FOR THIS MATRIX
+        print(f"[INFO] fixed classify_r=D.ESCAPE_R={D.ESCAPE_R:g}  vs.  "
+              f"fikl's determine_escape_radius(A)={principled_r:.6g} "
+              f"(THEY DON'T HAVE TO MATCH -- SEE defines.py)")  # LOG, INFORMATIONAL ONLY
+    except Exception as exc:  # DON'T LET A DIAGNOSTIC PRINT BREAK THE RUN
+        print(f"[INFO] determine_escape_radius(A) failed (non-fatal): {exc}")  # LOG
+
     td = build_matrix_c_grid_training_data(  # BUILD ONE MATRIX DATA
         data_dir=D.A_DATA_DIR,  # DATA DIR
         source=D.SINGLE_MATRIX_SOURCE,  # SOURCE
@@ -60,7 +72,10 @@ def run_single_matrix(device: torch.device | None = None) -> None:  # RUN SINGLE
         c_re_n=D.SINGLE_MATRIX_C_RE_N,  # RE RES
         c_im_n=D.SINGLE_MATRIX_C_IM_N,  # IM RES
         max_iters=D.TRAIN_MAX_ITERS,  # ITERS
-        escape_r=D.ESCAPE_R,  # ESCAPE
+        escape_r=D.DYNAMICS_CLAMP_R,  # NUMERICAL CLAMP DURING ITERATION (NOT THE CLASSIFY THRESHOLD)
+        classify_r=D.ESCAPE_R,  # "ESCAPED" THRESHOLD USED ONLY TO DECIDE WHAT'S ALIVE FOR TRAINING
+        filter_escaped=D.FILTER_ESCAPED_FOR_TRAINING,  # DROP ESCAPED TRAJECTORIES FROM X1/X2 (fikl's PRACTICE)
+        keep_escaped_fraction=D.KEEP_ESCAPED_FRACTION,  # EXPERIMENTAL, 0.0 = OFF (SEE defines.py)
     )
 
     # ------------------------------ SAVE TRAINING DATA ----------------------
@@ -71,8 +86,10 @@ def run_single_matrix(device: torch.device | None = None) -> None:  # RUN SINGLE
     feat_dim = int(td.X_grid.shape[-1])  # FEAT DIM
     d = (feat_dim - 2) // 2  # STATE DIM
 
+    alive_grid = td.meta.get("alive_mask_grid", None)  # (H,W) BOOL -- WHERE THE MODEL IS ACTUALLY IN-DOMAIN
+
     # ------------------------------ TRAIN AE + DMD --------------------------
-    enc, dec, losses = train_autoencoder(  # TRAIN AE (KOOPMAN LOSS)
+    enc, dec, losses, loss_components, val_losses = train_autoencoder(  # TRAIN AE (KOOPMAN LOSS)
         td.X1,  # LEFT
         td.X2,  # RIGHT
         latent_dim=D.LATENT_DIM,  # LATENT
@@ -82,7 +99,20 @@ def run_single_matrix(device: torch.device | None = None) -> None:  # RUN SINGLE
         device=device,  # DEVICE
     )
 
-    save_loss_curve(losses, dirs["res"] / "loss_curve.png", "Single Matrix AE Loss")  # LOSS
+    # NOTE: save_loss_curve NOW DEFAULTS TO log-scale (SEE eval_matrix_dmd_ae.py /
+    # defines.LOSS_CURVES_LOG_SCALE) AND CAN OVERLAY THE VALIDATION CURVE.
+    has_val = bool(np.any(np.isfinite(val_losses))) if len(val_losses) else False  # ANYTHING TO OVERLAY?
+    save_loss_curve(
+        losses, dirs["res"] / "loss_curve.png", "Single Matrix AE Loss",
+        extra_series=({"Validation": val_losses} if has_val else None),
+        primary_label="Train" if has_val else None,
+    )  # LOSS (+ VALIDATION IF WE HAVE ONE)
+    save_loss_curve(loss_components["rec"], dirs["res"] / "loss_curve_rec.png",
+                     "Single Matrix AE Loss -- Reconstruction Component")  # NEW: WHICH PART IS STUCK?
+    save_loss_curve(loss_components["lin"], dirs["res"] / "loss_curve_lin.png",
+                     "Single Matrix AE Loss -- Latent Linearity Component")
+    save_loss_curve(loss_components["pred"], dirs["res"] / "loss_curve_pred.png",
+                     "Single Matrix AE Loss -- Decoded Prediction Component")
     save_model(enc, os.path.join(D.CHECKPOINT_DIR, "encoder_single_matrix.pth"))  # SAVE ENC
     save_model(dec, os.path.join(D.CHECKPOINT_DIR, "decoder_single_matrix.pth"))  # SAVE DEC
 
@@ -97,32 +127,38 @@ def run_single_matrix(device: torch.device | None = None) -> None:  # RUN SINGLE
     print("SINGLE DMD SPECTRAL RADIUS:", rho)  # PRINT
 
     # ----------------------------- RECONSTRUCTION ---------------------------
-    # THE SYSTEM AS IS: ENCODE-DECODE THE TRUE FINAL STATE xT (NO TIME STEP)
     Z_recon = reconstruct_true_final_snapshot(td, enc, dec, device)  # RECON xT
-    save_final_snapshot_image(Z_recon, escape_r=D.ESCAPE_R, out_png=dirs["res"] / "recon_final_mask.png", mode="mask")  # RECON MASK
-    save_final_snapshot_image(Z_recon, escape_r=D.ESCAPE_R, out_png=dirs["res"] / "recon_final_snapshot_mag.png", mode="mag")  # RECON MAG
+    save_final_snapshot_image(Z_recon, escape_r=D.ESCAPE_R, out_png=dirs["res"] / "recon_final_mask.png",
+                               mode="mask", alive_mask=alive_grid)  # RECON MASK
+    save_final_snapshot_image(Z_recon, escape_r=D.ESCAPE_R, out_png=dirs["res"] / "recon_final_snapshot_mag.png",
+                               mode="mag", alive_mask=alive_grid)  # RECON MAG
 
     # ------------------------------- PREDICTION -----------------------------
     # THEN PREDICT THE NEXT PREDICT_EXTRA_STEPS STEP(S) STARTING FROM THE TRUE xT
     k = int(D.PREDICT_EXTRA_STEPS)  # HOW MANY STEPS AHEAD
 
-    Z_pred = predict_next_snapshot(td, enc, dec, dmd, device, steps=k, escape_r=D.ESCAPE_R)  # MODEL x_{T+k}
-    Z_true_next = iterate_true_next_snapshot(td, A, steps=k, escape_r=D.ESCAPE_R)  # TRUE x_{T+k}
-    debug_final_state_stats(f"SINGLE MATRIX (+{k})", Z_pred, D.ESCAPE_R)  # DEBUG
+    Z_pred = predict_next_snapshot(td, enc, dec, dmd, device, steps=k, escape_r=D.DYNAMICS_CLAMP_R)  # MODEL x_{T+k}
+    Z_true_next = iterate_true_next_snapshot(td, A, steps=k, escape_r=D.DYNAMICS_CLAMP_R)  # TRUE x_{T+k}
+    debug_final_state_stats(f"SINGLE MATRIX (+{k})", Z_pred, D.ESCAPE_R)  # DEBUG (CLASSIFICATION THRESHOLD)
 
-    save_final_snapshot_image(Z_pred, escape_r=D.ESCAPE_R, out_png=dirs["res"] / "pred_final_mask.png", mode="mask")  # PRED MASK
-    save_final_snapshot_image(Z_pred, escape_r=D.ESCAPE_R, out_png=dirs["res"] / "pred_final_snapshot_mag.png", mode="mag")  # PRED MAG
-    save_final_snapshot_image(Z_true_next, escape_r=D.ESCAPE_R, out_png=dirs["res"] / "true_next_final_mask.png", mode="mask")  # TRUE NEXT MASK
-    save_final_snapshot_image(Z_true_next, escape_r=D.ESCAPE_R, out_png=dirs["res"] / "true_next_final_snapshot_mag.png", mode="mag")  # TRUE NEXT MAG
+    save_final_snapshot_image(Z_pred, escape_r=D.ESCAPE_R, out_png=dirs["res"] / "pred_final_mask.png",
+                               mode="mask", alive_mask=alive_grid)  # PRED MASK
+    save_final_snapshot_image(Z_pred, escape_r=D.ESCAPE_R, out_png=dirs["res"] / "pred_final_snapshot_mag.png",
+                               mode="mag", alive_mask=alive_grid)  # PRED MAG
+    save_final_snapshot_image(Z_true_next, escape_r=D.ESCAPE_R, out_png=dirs["res"] / "true_next_final_mask.png",
+                               mode="mask")  # TRUE NEXT MASK -- GROUND TRUTH, NO alive_mask (ALWAYS MEANINGFUL)
+    save_final_snapshot_image(Z_true_next, escape_r=D.ESCAPE_R, out_png=dirs["res"] / "true_next_final_snapshot_mag.png",
+                               mode="mag")  # TRUE NEXT MAG -- SAME
 
     # PREDICTED FRACTAL (TEACHER FORCED: PREDICT x_{t+1} FROM EACH TRUE x_t, NO COMPOUNDING)
     iters_pred = teacher_forced_escape_iters(td, enc, dec, dmd, device, escape_r=D.ESCAPE_R)  # PRED FRACTAL
-    save_escape_image(iters_pred, max_iters=int(td.X_grid.shape[0]), out_png=dirs["res"] / "pred_escape_iters.png")  # SAVE FRACTAL
+    save_escape_image(iters_pred, max_iters=int(td.X_grid.shape[0]), out_png=dirs["res"] / "pred_escape_iters.png",
+                       alive_mask=alive_grid)  # SAVE FRACTAL
 
     #------V33
     maxit = int(D.TRAIN_MAX_ITERS)
     rollout = predict_rollout_from_start_ae_dmd(
-        td, enc, dec, dmd, device, steps=maxit, escape_r=D.ESCAPE_R,
+        td, enc, dec, dmd, device, steps=maxit, escape_r=D.DYNAMICS_CLAMP_R,  # NUMERICAL CLAMP, MATCHES DATA BUILDER
     )  # rollout[s] = AE+DMD PREDICTION OF x_{s+2}, s = 0 .. maxit-2
 
     # ---- TEST 1: MACRO / EYEBALL -----------------------------------
@@ -133,16 +169,29 @@ def run_single_matrix(device: torch.device | None = None) -> None:  # RUN SINGLE
 
     save_final_snapshot_image(Z_pred_final, escape_r=D.ESCAPE_R,
                               out_png=dirs["res"] / "rollout_from_start_final_mask.png",
-                              mode="mask")
+                              mode="mask", alive_mask=alive_grid)
     save_final_snapshot_image(Z_pred_final, escape_r=D.ESCAPE_R,
-                              out_png=dirs["res"] / "rollout_from_start_final_mag.png", mode="mag")
+                              out_png=dirs["res"] / "rollout_from_start_final_mag.png", mode="mag",
+                              alive_mask=alive_grid)
 
     rollout_final_m = next_step_prediction_metrics(Z_pred_final, Z_true_final)
-    print_metric_block(f"SINGLE MATRIX AE+DMD ROLLOUT x1 -> x{maxit} (MACRO)", rollout_final_m)
+    print_metric_block(f"SINGLE MATRIX AE+DMD ROLLOUT x1 -> x{maxit} (MACRO, FULL GRID)", rollout_final_m)
+
+    rollout_final_m_alive = None  # DEFAULT
+    if alive_grid is not None and bool(np.any(alive_grid)):  # HAVE A USEFUL MASK
+        rollout_final_m_alive = next_step_prediction_metrics(
+            Z_pred_final[alive_grid], Z_true_final[alive_grid],
+        )
+        print_metric_block(
+            f"SINGLE MATRIX AE+DMD ROLLOUT x1 -> x{maxit} (MACRO, ALIVE-ONLY, "
+            f"{int(np.count_nonzero(alive_grid))}/{alive_grid.size} px)",
+            rollout_final_m_alive,
+        )
 
     # ---- TEST 2: QUANTITATIVE ---------------------------------------
     n_check = min(int(getattr(D, "PREDICT_ROLLOUT_CHECK_STEPS", 10)), rollout.shape[0])
     rollout_rel_l2: list[float] = []
+    rollout_rel_l2_alive: list[float] = []  # NEW: SAME CURVE, RESTRICTED TO PIXELS THE MODEL WAS TRAINED ON
     rollout_step_metrics: dict = {}
 
     for s in range(n_check):
@@ -151,30 +200,62 @@ def run_single_matrix(device: torch.device | None = None) -> None:  # RUN SINGLE
         Z_true_s = td.X_grid[s + 1][..., :2 * d_state]  # DROP TRAILING C SO SHAPES MATCH
 
         m_s = next_step_prediction_metrics(Z_pred_s, Z_true_s)
-        print_metric_block(f"SINGLE MATRIX AE+DMD ROLLOUT, {s + 1} STEP(S) IN (x{true_iter})", m_s)
+        print_metric_block(f"SINGLE MATRIX AE+DMD ROLLOUT, {s + 1} STEP(S) IN (x{true_iter}, FULL GRID)", m_s)
 
         rollout_step_metrics[f"rollout_rel_l2_step_{s + 1:03d}"] = float(m_s["pred_rel_l2"])
         rollout_rel_l2.append(float(m_s["pred_rel_l2"]))
 
+        if alive_grid is not None and bool(np.any(alive_grid)):
+            m_s_alive = next_step_prediction_metrics(Z_pred_s[alive_grid], Z_true_s[alive_grid])
+            print_metric_block(
+                f"SINGLE MATRIX AE+DMD ROLLOUT, {s + 1} STEP(S) IN (x{true_iter}, ALIVE-ONLY)", m_s_alive,
+            )
+            rollout_step_metrics[f"rollout_rel_l2_alive_step_{s + 1:03d}"] = float(m_s_alive["pred_rel_l2"])
+            rollout_rel_l2_alive.append(float(m_s_alive["pred_rel_l2"]))
+
+    # NOTE: THESE ARE RELATIVE-L2-vs-STEP CURVES, NOT LOSS CURVES -- THEY DON'T
+    # SPAN ENOUGH ORDERS OF MAGNITUDE TO NEED A LOG AXIS, SO EXPLICITLY KEEP
+    # THEM LINEAR (log_scale=False) EVEN THOUGH save_loss_curve NOW DEFAULTS
+    # TO LOG FOR EVERYTHING ELSE.
     save_loss_curve(
         rollout_rel_l2, dirs["res"] / "rollout_rel_l2_vs_step.png",
-        "AE+DMD Rollout Relative L2 Error vs Steps Beyond x1",
+        "AE+DMD Rollout Relative L2 Error vs Steps Beyond x1 (Full Grid)",
+        xlabel="Steps beyond x1", ylabel="Relative L2 error", log_scale=False,
     )
+    if rollout_rel_l2_alive:  # ONLY IF WE HAD A MASK TO WORK WITH
+        save_loss_curve(
+            rollout_rel_l2_alive, dirs["res"] / "rollout_rel_l2_vs_step_alive.png",
+            f"AE+DMD Rollout Relative L2 Error vs Steps Beyond x1 (Alive-Only, {int(np.count_nonzero(alive_grid))}/{alive_grid.size} px)",
+            xlabel="Steps beyond x1", ylabel="Relative L2 error", log_scale=False,
+        )
 
     # -------------------------------- METRICS -------------------------------
-    ae_m = autoencoder_reconstruction_metrics(enc, dec, td.X, device)  # RECON METRICS
-    dmd_m = dmd_one_step_metrics(enc, dec, dmd, td.X1, td.X2, device)  # ONE-STEP TEACHER-FORCED METRICS
-    pred_m = next_step_prediction_metrics(Z_pred, Z_true_next)  # PREDICTED vs TRUE NEXT STEP
-    print_metric_block("SINGLE MATRIX AE (RECON)", ae_m)  # PRINT
+    ae_m = autoencoder_reconstruction_metrics(enc, dec, td.X, device)  # RECON METRICS, FULL GRID (DIAGNOSTIC)
+    ae_m_alive = autoencoder_reconstruction_metrics_alive(enc, dec, td, device)  # NEW: EXACTLY-TRAINED-ON ROWS ONLY
+    dmd_m = dmd_one_step_metrics(enc, dec, dmd, td.X1, td.X2, device)  # ONE-STEP TEACHER-FORCED METRICS (ALREADY ALIVE-ONLY)
+    pred_m = next_step_prediction_metrics(Z_pred, Z_true_next)  # PREDICTED vs TRUE NEXT STEP (FULL GRID)
+    print_metric_block("SINGLE MATRIX AE (RECON, FULL GRID)", ae_m)  # PRINT
+    print_metric_block("SINGLE MATRIX AE (RECON, ALIVE-ONLY)", ae_m_alive)  # PRINT -- NEW
     print_metric_block("SINGLE MATRIX DMD (ONE-STEP)", dmd_m)  # PRINT
-    print_metric_block(f"SINGLE MATRIX PREDICT (+{k} FROM TRUE xT)", pred_m)  # PRINT
+    print_metric_block(f"SINGLE MATRIX PREDICT (+{k} FROM TRUE xT, FULL GRID)", pred_m)  # PRINT
+
+    pred_m_alive = None  # DEFAULT
+    if alive_grid is not None and bool(np.any(alive_grid)):  # ALIVE-ONLY VARIANT
+        pred_m_alive = next_step_prediction_metrics(Z_pred[alive_grid], Z_true_next[alive_grid])
+        print_metric_block(f"SINGLE MATRIX PREDICT (+{k} FROM TRUE xT, ALIVE-ONLY)", pred_m_alive)  # PRINT
 
     #metrics = {**ae_m, **dmd_m, **pred_m, "predict_extra_steps": float(k), "dmd_spectral_radius": rho}  # MERGE
     metrics = {
-        **ae_m, **dmd_m, **pred_m,
+        **ae_m, **ae_m_alive, **dmd_m, **pred_m,
         "predict_extra_steps": float(k), "dmd_spectral_radius": rho,
         **{f"rollout_final_{key}": val for key, val in rollout_final_m.items()},
         **rollout_step_metrics,
+        "n_alive": float(td.meta.get("n_alive", -1)),  # HOW MANY GRID POINTS WERE TRAINED ON
+        "n_total": float(td.meta.get("n_total", -1)),
+        **({f"rollout_final_alive_{key}": val for key, val in rollout_final_m_alive.items()}
+           if rollout_final_m_alive is not None else {}),
+        **({f"pred_alive_{key}": val for key, val in pred_m_alive.items()}
+           if pred_m_alive is not None else {}),
     }  # MERGE
     write_metrics_txt(dirs["res"] / "metrics.txt", metrics)  # SAVE METRICS
 

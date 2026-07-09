@@ -35,6 +35,19 @@ def _sanitize_finite(x: np.ndarray, name: str) -> np.ndarray:  # FINITE FIX
     print(f"[WARN] {name} HAD NaN/Inf -> FIXING")  # WARN
     return np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)  # FIX
 
+def determine_escape_radius(A: np.ndarray) -> float:  # MATRIX-DEPENDENT ESCAPE RADIUS (fikl's commonlib.py)
+    
+    A = np.asarray(A, dtype=np.float64)  # FP64 FOR THE SVD
+    if A.ndim != 2 or A.shape[0] != A.shape[1]:  # SQUARE CHECK
+        raise ValueError(f"'A' must be a square matrix: {A.shape}")  # ERROR
+    n = int(A.shape[0])  # SIZE
+    sigma = np.linalg.svd(A, compute_uv=False)  # SINGULAR VALUES
+    sigma_min = float(np.min(sigma))  # SMALLEST
+    if sigma_min <= 0.0:  # SINGULAR MATRIX GUARD
+        return float("inf")  # NO FINITE BOUND MAKES SENSE
+    return float(2.0 * np.sqrt(n) / (sigma_min ** 2))  # fikl's FORMULA
+
+
 def _cap_complex_vec(zr: np.ndarray, zi: np.ndarray, r: float) -> tuple[np.ndarray, np.ndarray]:  # CLAMP |Z|
     r = float(r)  # R
     if r <= 0.0:  # BAD
@@ -107,23 +120,7 @@ def build_mandelbrot_training_data(  # BUILD MANDELBROT (GRID)
     escape_r: float = 2.0,  # ESCAPE R (UPPER BOUND)
     seed: int = 0,  # KEEP PARAM (NOT USED IN GRID MODE)  # COMPAT
 ) -> TrainingData:
-    """
-    YOU ASKED FOR:
-      - IF |Z| > ESCAPE_R => SET |Z| = ESCAPE_R (CLAMP UPPER BOUND)
-      - REMOVE NORMALISATION
-      - OUTPUT WHAT IS IN TRAINING
-      - X SAVED AS ONE BIG ARRAY:
-          T * (C_IM_RES) * (C_RE_RES)
 
-    DATA FORMAT PER ROW:
-      [zr, zi, cr, ci]
-
-    SHAPES:
-      P = c_re_n * c_im_n
-      X  : (T*P, 4)
-      X1 : ((T-1)*P, 4)
-      X2 : ((T-1)*P, 4)
-    """
     _ = int(seed)  # UNUSED  # KEEP FOR CALL COMPAT
 
     # ------------------------------ SETUP -----------------------------------
@@ -249,10 +246,15 @@ def _build_matrix_c_grid_training_data_from_A(  # BUILD GRID DATA WITH GIVEN A
     c_re_n: int = 256,  # RE RES
     c_im_n: int = 256,  # IM RES
     max_iters: int = 40,  # ITER COUNT
-    escape_r: float = 2.0,  # ESCAPE RADIUS
+    escape_r: float = 2.0,  # NUMERICAL CLAMP DURING ITERATION (E.G. D.DYNAMICS_CLAMP_R)
     matrix_index: int | None = None,  # OPTIONAL INDEX
     matrix_source: str | None = None,  # OPTIONAL SOURCE
+    filter_escaped: bool = True,  # DROP (X1,X2) PAIRS FOR TRAJECTORIES THAT ESCAPE BY THE FINAL ITERATION
+    classify_r: float | None = None,  # "ESCAPED" THRESHOLD FOR FILTERING (E.G. D.ESCAPE_R); DEFAULTS TO escape_r
+    keep_escaped_fraction: float = 0.0,  # EXPERIMENTAL: RANDOMLY KEEP THIS FRACTION OF ESCAPED TRAJECTORIES TOO
+    keep_escaped_seed: int = 0,  # REPRODUCIBLE SUBSAMPLE
 ) -> TrainingData:
+
     A = np.asarray(A, dtype=np.float32)  # FP32
 
     d = int(A.shape[0])  # STATE DIM
@@ -296,19 +298,52 @@ def _build_matrix_c_grid_training_data_from_A(  # BUILD GRID DATA WITH GIVEN A
         X_tp[t, :, 2 * d] = cr_flat  # SAVE CR
         X_tp[t, :, 2 * d + 1] = ci_flat  # SAVE CI
 
-    X_grid = X_tp.reshape(T, Ni, Nr, feat_dim).astype(np.float32, copy=False)  # BIG GRID
-    X = X_tp.reshape(T * P, feat_dim).astype(np.float32)  # FLAT
-    X1 = X_tp[:-1].reshape((T - 1) * P, feat_dim).astype(np.float32)  # LEFT
-    X2 = X_tp[1:].reshape((T - 1) * P, feat_dim).astype(np.float32)  # RIGHT
+    X_grid = X_tp.reshape(T, Ni, Nr, feat_dim).astype(np.float32, copy=False)  # BIG GRID -- ALWAYS FULL GRID
+    X = X_tp.reshape(T * P, feat_dim).astype(np.float32)  # FLAT -- ALWAYS FULL GRID
+
+    # ---------------------- ALIVE MASK (FOR FILTERING ONLY) -----------------
+    c_r = float(escape_r if classify_r is None else classify_r)  # THRESHOLD FOR "ESCAPED"
+    final_zr = X_tp[-1, :, 0:d]  # LAST STORED RE
+    final_zi = X_tp[-1, :, d:2 * d]  # LAST STORED IM
+    final_mag2 = np.max(final_zr * final_zr + final_zi * final_zi, axis=1)  # MAX COMPONENT MAG2 PER GRID POINT
+    alive = np.isfinite(final_mag2) & (final_mag2 < c_r * c_r)  # BOUNDED AT FINAL ITER -> KEEP
+
+    if bool(filter_escaped) and int(np.count_nonzero(alive)) > 0:  # HAVE SOMETHING TO KEEP
+        keep = alive.copy()  # START FROM THE ALIVE MASK
+
+        frac = float(keep_escaped_fraction)  # EXPERIMENTAL KNOB, DEFAULT 0.0 = OFF
+        if frac > 0.0:  # OPT-IN: ALSO KEEP A RANDOM SLICE OF THE ESCAPED TRAJECTORIES
+            escaped_idx = np.flatnonzero(~alive)  # INDICES OF ESCAPED GRID POINTS
+            n_keep = int(round(frac * escaped_idx.size))  # HOW MANY TO ADD BACK
+            if n_keep > 0:  # SOMETHING TO ADD
+                rng = np.random.default_rng(int(keep_escaped_seed))  # REPRODUCIBLE
+                chosen = rng.choice(escaped_idx, size=min(n_keep, escaped_idx.size), replace=False)  # SUBSAMPLE
+                keep[chosen] = True  # ADD THEM BACK IN
+
+        X1 = X_tp[:-1][:, keep, :].reshape(-1, feat_dim).astype(np.float32)  # LEFT
+        X2 = X_tp[1:][:, keep, :].reshape(-1, feat_dim).astype(np.float32)  # RIGHT
+    else:  # NO FILTERING (OR NOTHING SURVIVED -- FALL BACK RATHER THAN RETURN EMPTY ARRAYS)
+        if bool(filter_escaped):  # WARN, SINCE THIS IS PROBABLY NOT WHAT YOU WANT
+            print(f"[WARN] filter_escaped=True BUT 0/{P} POINTS SURVIVED AT classify_r={c_r} "
+                  f"-- FALLING BACK TO THE UNFILTERED GRID FOR THIS MATRIX")  # WARN
+        X1 = X_tp[:-1].reshape((T - 1) * P, feat_dim).astype(np.float32)  # LEFT, UNFILTERED
+        X2 = X_tp[1:].reshape((T - 1) * P, feat_dim).astype(np.float32)  # RIGHT, UNFILTERED
 
     X = _sanitize_finite(X, "X")  # FIX
     X1 = _sanitize_finite(X1, "X1")  # FIX
     X2 = _sanitize_finite(X2, "X2")  # FIX
 
+    n_alive = int(np.count_nonzero(alive))  # HOW MANY GRID POINTS WERE BOUNDED
+    n_kept = int(X1.shape[0] // max(T - 1, 1))  # HOW MANY GRID POINTS ACTUALLY WENT INTO X1/X2
+    extra = f", +{n_kept - n_alive} ESCAPED (keep_escaped_fraction={keep_escaped_fraction:g})" if n_kept > n_alive else ""
+    print(f"[TRAINING] matrix_c_grid: {n_alive}/{P} points bounded at classify_r={c_r:g} "
+          f"(clamp_r={r:g}) -> X1/X2 rows={X1.shape[0]}{extra}"
+          + (" (UNFILTERED)" if not filter_escaped else ""))  # LOG
+
     return TrainingData(
-        X=X,  # FULL
-        X1=X1,  # LEFT
-        X2=X2,  # RIGHT
+        X=X,  # FULL GRID, ALWAYS
+        X1=X1,  # LEFT, POSSIBLY FILTERED
+        X2=X2,  # RIGHT, POSSIBLY FILTERED
         meta={
             "mode": "matrix_c_grid",  # TAG
             "matrix_index": None if matrix_index is None else int(matrix_index),  # SAVE
@@ -317,9 +352,16 @@ def _build_matrix_c_grid_training_data_from_A(  # BUILD GRID DATA WITH GIVEN A
             "max_iters": int(T),  # SAVE
             "c_re_n": int(Nr),  # SAVE
             "c_im_n": int(Ni),  # SAVE
-            "escape_r": float(r),  # SAVE
+            "escape_r": float(r),  # SAVE (THIS IS THE ITERATION CLAMP, E.G. DYNAMICS_CLAMP_R)
+            "classify_r": float(c_r),  # SAVE (THE "ESCAPED" THRESHOLD USED FOR FILTERING)
+            "filter_escaped": bool(filter_escaped),  # SAVE
+            "keep_escaped_fraction": float(keep_escaped_fraction),  # SAVE
+            "n_alive": n_alive,  # SAVE
+            "n_kept": n_kept,  # SAVE (>= n_alive IF keep_escaped_fraction > 0)
+            "n_total": int(P),  # SAVE
+            "alive_mask_grid": alive.reshape(Ni, Nr),  # (H,W) BOOL -- WHICH PIXELS WERE BOUNDED (NOT NECESSARILY = TRAINED-ON WHEN keep_escaped_fraction > 0)
         },
-        X_grid=X_grid,  # GRID
+        X_grid=X_grid,  # GRID -- ALWAYS FULL, UNFILTERED (NEEDED FOR IMAGES / ROLLOUT-VS-GROUND-TRUTH)
     )
 
 def build_matrix_c_grid_training_data(  # BUILD GRID DATA WITH A
@@ -334,7 +376,10 @@ def build_matrix_c_grid_training_data(  # BUILD GRID DATA WITH A
     c_re_n: int = 256,  # RE RES
     c_im_n: int = 256,  # IM RES
     max_iters: int = 40,  # ITER COUNT
-    escape_r: float = 2.0,  # ESCAPE RADIUS
+    escape_r: float = 2.0,  # NUMERICAL CLAMP DURING ITERATION (E.G. D.DYNAMICS_CLAMP_R)
+    filter_escaped: bool = True,  # DROP (X1,X2) PAIRS FOR TRAJECTORIES THAT ESCAPE BY THE FINAL ITERATION
+    classify_r: float | None = None,  # "ESCAPED" THRESHOLD (E.G. D.ESCAPE_R); DEFAULTS TO escape_r
+    keep_escaped_fraction: float = 0.0,  # EXPERIMENTAL, OFF BY DEFAULT -- SEE _build_matrix_c_grid_training_data_from_A
 ) -> TrainingData:  # RETURN DATA
     data_dir = Path(data_dir)  # PATH
     A = load_one_A_matrix(data_dir, source=source, index=index)  # LOAD A
@@ -350,6 +395,9 @@ def build_matrix_c_grid_training_data(  # BUILD GRID DATA WITH A
         escape_r=escape_r,
         matrix_index=index,
         matrix_source=source,
+        filter_escaped=filter_escaped,
+        classify_r=classify_r,
+        keep_escaped_fraction=keep_escaped_fraction,
     )
 
 def build_matrix_c_grid_training_data_many_matrices(  # MANY MATRICES
@@ -364,7 +412,9 @@ def build_matrix_c_grid_training_data_many_matrices(  # MANY MATRICES
     c_re_n: int = 8,  # SMALL RE RES
     c_im_n: int = 8,  # SMALL IM RES
     max_iters: int = 40,  # ITER COUNT
-    escape_r: float = 2.0,  # ESCAPE RADIUS
+    escape_r: float = 2.0,  # NUMERICAL CLAMP DURING ITERATION (E.G. D.DYNAMICS_CLAMP_R)
+    filter_escaped: bool = True,  # DROP (X1,X2) PAIRS FOR TRAJECTORIES THAT ESCAPE BY THE FINAL ITERATION
+    classify_r: float | None = None,  # "ESCAPED" THRESHOLD (E.G. D.ESCAPE_R); DEFAULTS TO escape_r
 ) -> list[TrainingData]:
     data_dir = Path(data_dir)  # PATH
     A_all = load_all_A_matrices(data_dir, source=source)  # LOAD ALL
@@ -383,6 +433,8 @@ def build_matrix_c_grid_training_data_many_matrices(  # MANY MATRICES
             escape_r=escape_r,
             matrix_index=int(idx),
             matrix_source=source,
+            filter_escaped=filter_escaped,
+            classify_r=classify_r,
         )
         out.append(td)  # STORE
 

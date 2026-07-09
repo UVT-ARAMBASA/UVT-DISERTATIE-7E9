@@ -1,6 +1,7 @@
 import torch  # TORCH IMPORT
 import torch.nn as nn  # NN MODULE
 
+
 class Encoder(nn.Module):  # ENCODER CLASS
     def __init__(self, input_dim, latent_dim):  # INIT ENCODER
         super().__init__()  # CALL SUPER
@@ -11,8 +12,7 @@ class Encoder(nn.Module):  # ENCODER CLASS
             nn.LeakyReLU(0.1),  # ACTIVATION
             nn.Linear(256, 128),  # LINEAR LAYER
             nn.LeakyReLU(0.1),  # ACTIVATION
-            nn.Linear(128, latent_dim),  # LATENT OUTPUT
-            nn.LayerNorm(latent_dim)  # NORMALISE LATENT
+            nn.Linear(128, latent_dim),  # LATENT OUTPUT -- RAW, NO NORM (SEE NOTE ABOVE)
         )
 
     def forward(self, x):  # FORWARD PASS

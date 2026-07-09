@@ -13,12 +13,14 @@ from train_autoencoder import train_autoencoder  # AE TRAINING
 from eval_matrix_dmd_ae import (  # EVAL HELPERS
     save_loss_curve,
     autoencoder_reconstruction_metrics,
+    autoencoder_reconstruction_metrics_alive,  # NEW: THE APPLES-TO-APPLES AE NUMBER
     dmd_one_step_metrics,
     save_ground_truth_final_mask,
     save_ground_truth_escape_iters,
     reconstruct_true_final_snapshot,
     iterate_true_next_snapshot,
     predict_next_snapshot,
+    predict_rollout_from_start_ae_dmd,  # NEW: THE "SERIOUS" TEST FROM ALEX'S EMAIL (SEE BELOW)
     next_step_prediction_metrics,
     teacher_forced_escape_iters,
 )
@@ -71,7 +73,9 @@ def run_multi_matrix(device: torch.device | None = None) -> None:  # RUN MULTI E
         c_re_n=D.MULTI_MATRIX_C_RE_N,
         c_im_n=D.MULTI_MATRIX_C_IM_N,
         max_iters=D.TRAIN_MAX_ITERS,
-        escape_r=D.ESCAPE_R,
+        escape_r=D.DYNAMICS_CLAMP_R,  # NUMERICAL CLAMP DURING ITERATION (NOT THE CLASSIFY THRESHOLD)
+        classify_r=D.ESCAPE_R,  # "ESCAPED" THRESHOLD USED ONLY TO DECIDE WHAT'S ALIVE FOR TRAINING
+        filter_escaped=D.FILTER_ESCAPED_FOR_TRAINING,  # DROP ESCAPED TRAJECTORIES FROM X1/X2 (fikl's PRACTICE)
     )
 
     save_ground_truth_final_mask(td_train_list[0], D.ESCAPE_R, dirs["td"] / "train_example_gt_final_mask.png", scale=D.IMAGE_SCALE)  # TRAIN GT MASK
@@ -81,7 +85,7 @@ def run_multi_matrix(device: torch.device | None = None) -> None:  # RUN MULTI E
         td.X_grid = None  # NOT NEEDED FOR TRAINING
 
     # ------------------------------ TRAIN AE + DMD --------------------------
-    enc, dec, losses = train_autoencoder(  # TRAIN AE ON THE 40 TRAIN MATRICES
+    enc, dec, losses, loss_components, val_losses = train_autoencoder(  # TRAIN AE ON THE 40 TRAIN MATRICES
         [td.X1 for td in td_train_list],
         [td.X2 for td in td_train_list],
         latent_dim=D.LATENT_DIM,
@@ -91,7 +95,20 @@ def run_multi_matrix(device: torch.device | None = None) -> None:  # RUN MULTI E
         device=device,
     )
 
-    save_loss_curve(losses, dirs["res"] / "loss_curve.png", "Multi-Matrix AE Loss")  # LOSS
+    # NOTE: save_loss_curve NOW DEFAULTS TO log-scale AND CAN OVERLAY THE
+    # VALIDATION CURVE -- SEE eval_matrix_dmd_ae.py / defines.py.
+    has_val = bool(np.any(np.isfinite(val_losses))) if len(val_losses) else False  # ANYTHING TO OVERLAY?
+    save_loss_curve(
+        losses, dirs["res"] / "loss_curve.png", "Multi-Matrix AE Loss",
+        extra_series=({"Validation": val_losses} if has_val else None),
+        primary_label="Train" if has_val else None,
+    )  # LOSS (+ VALIDATION IF WE HAVE ONE)
+    save_loss_curve(loss_components["rec"], dirs["res"] / "loss_curve_rec.png",
+                    "Multi-Matrix AE Loss -- Reconstruction Component")
+    save_loss_curve(loss_components["lin"], dirs["res"] / "loss_curve_lin.png",
+                    "Multi-Matrix AE Loss -- Latent Linearity Component")
+    save_loss_curve(loss_components["pred"], dirs["res"] / "loss_curve_pred.png",
+                    "Multi-Matrix AE Loss -- Decoded Prediction Component")
     save_model(enc, os.path.join(D.CHECKPOINT_DIR, "encoder_multi_matrix.pth"))  # SAVE ENC
     save_model(dec, os.path.join(D.CHECKPOINT_DIR, "decoder_multi_matrix.pth"))  # SAVE DEC
 
@@ -111,57 +128,188 @@ def run_multi_matrix(device: torch.device | None = None) -> None:  # RUN MULTI E
         c_re_n=D.MULTI_MATRIX_C_RE_N,
         c_im_n=D.MULTI_MATRIX_C_IM_N,
         max_iters=D.TRAIN_MAX_ITERS,
-        escape_r=D.ESCAPE_R,
+        escape_r=D.DYNAMICS_CLAMP_R,  # NUMERICAL CLAMP DURING ITERATION (NOT THE CLASSIFY THRESHOLD)
+        classify_r=D.ESCAPE_R,  # "ESCAPED" THRESHOLD USED ONLY TO DECIDE WHAT'S ALIVE FOR TRAINING
+        filter_escaped=D.FILTER_ESCAPED_FOR_TRAINING,  # DROP ESCAPED TRAJECTORIES FROM X1/X2 (fikl's PRACTICE)
     )
 
     k = int(D.PREDICT_EXTRA_STEPS)  # STEPS AHEAD
-    ae_metrics_all = []  # STORE AE METRICS
+    ae_metrics_all = []  # STORE AE METRICS (FULL GRID)
+    ae_alive_metrics_all = []  # NEW: STORE AE METRICS (ALIVE-ONLY)
     dmd_metrics_all = []  # STORE DMD ONE-STEP METRICS
-    pred_metrics_all = []  # STORE NEXT-STEP PREDICTION METRICS
+    pred_metrics_all = []  # STORE NEXT-STEP PREDICTION METRICS (FULL GRID)
+    pred_alive_metrics_all = []  # NEW: STORE NEXT-STEP PREDICTION METRICS (ALIVE-ONLY)
+
+    # ============================================================
+    maxit = int(D.TRAIN_MAX_ITERS)  # T
+    n_check = min(int(getattr(D, "PREDICT_ROLLOUT_CHECK_STEPS", 10)), max(maxit - 1, 0))  # HOW MANY STEPS TO CHECK
+    rollout_final_metrics_all = []  # TEST 1 (MACRO), FULL GRID, PER TEST MATRIX
+    rollout_final_alive_metrics_all = []  # TEST 1 (MACRO), ALIVE-ONLY, PER TEST MATRIX (WHERE AVAILABLE)
+    rollout_step_curves_all = []  # TEST 2 (QUANTITATIVE), FULL GRID, ONE (n_check,) CURVE PER TEST MATRIX
+    rollout_step_curves_alive_all = []  # TEST 2, ALIVE-ONLY, SAME (WHERE AVAILABLE)
 
     for j, td_test in enumerate(td_test_list):  # LOOP HELD-OUT TEST MATRICES
         A_test = A_all[int(test_idx[j])]  # TRUE MATRIX FOR THIS TEST CASE
-
-        ae_m = autoencoder_reconstruction_metrics(enc, dec, td_test.X, device)  # RECON METRICS
+        alive_grid = td_test.meta.get("alive_mask_grid", None)  # (H,W) BOOL -- WHERE THE MODEL IS IN-DOMAIN
+        ae_m = autoencoder_reconstruction_metrics(enc, dec, td_test.X, device)  # RECON METRICS, FULL GRID (DIAGNOSTIC)
+        ae_m_alive = autoencoder_reconstruction_metrics_alive(enc, dec, td_test, device)  # NEW
         dmd_m = dmd_one_step_metrics(enc, dec, dmd, td_test.X1, td_test.X2, device)  # ONE-STEP METRICS
 
-        Z_pred = predict_next_snapshot(td_test, enc, dec, dmd, device, steps=k, escape_r=D.ESCAPE_R)  # MODEL x_{T+k}
-        Z_true_next = iterate_true_next_snapshot(td_test, A_test, steps=k, escape_r=D.ESCAPE_R)  # TRUE x_{T+k}
-        pred_m = next_step_prediction_metrics(Z_pred, Z_true_next)  # PRED vs TRUE NEXT
+        # NUMERICAL ITERATION CLAMP -- MATCHES WHAT BUILT td_test.X_grid.
+        Z_pred = predict_next_snapshot(td_test, enc, dec, dmd, device, steps=k, escape_r=D.DYNAMICS_CLAMP_R)  # MODEL x_{T+k}
+        Z_true_next = iterate_true_next_snapshot(td_test, A_test, steps=k, escape_r=D.DYNAMICS_CLAMP_R)  # TRUE x_{T+k}
+        pred_m = next_step_prediction_metrics(Z_pred, Z_true_next)  # PRED vs TRUE NEXT (FULL GRID)
+
+        pred_m_alive = None  # DEFAULT
+        if alive_grid is not None and bool(np.any(alive_grid)):  # NEW: ALIVE-ONLY VARIANT
+            pred_m_alive = next_step_prediction_metrics(Z_pred[alive_grid], Z_true_next[alive_grid])
+
+        # ---- NEW: ROLLOUT-FROM-START (SEE BLOCK COMMENT ABOVE THE LOOP) ----
+        rollout = predict_rollout_from_start_ae_dmd(  # ONE ROLLOUT SERVES BOTH TESTS BELOW
+            td_test, enc, dec, dmd, device, steps=maxit, escape_r=D.DYNAMICS_CLAMP_R,
+        )  # rollout[s] = AE+DMD PREDICTION OF x_{s+2}, s = 0 .. maxit-2
+        d_state = int((int(td_test.X_grid.shape[-1]) - 2) // 2)  # td_test.X_grid HAS +2 C CHANNELS, rollout DOES NOT
+
+        Z_pred_final = rollout[-1]  # PREDICTED x_{maxit}
+        Z_true_final = td_test.X_grid[-1][..., :2 * d_state]  # DROP TRAILING C SO SHAPES MATCH
+        final_m = next_step_prediction_metrics(Z_pred_final, Z_true_final)  # TEST 1: MACRO/EYEBALL, QUANTIFIED
+        rollout_final_metrics_all.append(final_m)  # STORE
+
+        if alive_grid is not None and bool(np.any(alive_grid)):  # ALIVE-ONLY VARIANT
+            final_m_alive = next_step_prediction_metrics(Z_pred_final[alive_grid], Z_true_final[alive_grid])
+            rollout_final_alive_metrics_all.append(final_m_alive)  # STORE
+            print_metric_block(
+                f"TEST MATRIX {int(test_idx[j])} AE+DMD ROLLOUT x1 -> x{maxit} (MACRO, ALIVE-ONLY, "
+                f"{int(np.count_nonzero(alive_grid))}/{alive_grid.size} px)", final_m_alive,
+            )  # PRINT
+
+        step_curve = []  # THIS TEST MATRIX'S rel_l2-vs-STEP CURVE, FULL GRID
+        step_curve_alive = []  # SAME, ALIVE-ONLY
+        for s in range(n_check):  # TEST 2: QUANTITATIVE, s STEPS BEYOND x1
+            Z_pred_s = rollout[s]  # PREDICTED x_{s+2}
+            Z_true_s = td_test.X_grid[s + 1][..., :2 * d_state]  # TRUE x_{s+2}
+            m_s = next_step_prediction_metrics(Z_pred_s, Z_true_s)  # rel_l2, mse, fit
+            step_curve.append(float(m_s["pred_rel_l2"]))  # COLLECT
+
+            if alive_grid is not None and bool(np.any(alive_grid)):  # ALIVE-ONLY VARIANT
+                m_s_alive = next_step_prediction_metrics(Z_pred_s[alive_grid], Z_true_s[alive_grid])
+                step_curve_alive.append(float(m_s_alive["pred_rel_l2"]))  # COLLECT
+
+        rollout_step_curves_all.append(step_curve)  # STORE THIS MATRIX'S CURVE
+        if step_curve_alive:  # ONLY IF WE HAD A USABLE MASK
+            rollout_step_curves_alive_all.append(step_curve_alive)  # STORE
+        # ---------------------------------------------------------------------
 
         ae_metrics_all.append(ae_m)  # STORE
+        ae_alive_metrics_all.append(ae_m_alive)  # STORE
         dmd_metrics_all.append(dmd_m)  # STORE
         pred_metrics_all.append(pred_m)  # STORE
+        if pred_m_alive is not None:  # STORE IF WE HAVE ONE
+            pred_alive_metrics_all.append(pred_m_alive)  # STORE
 
-        print_metric_block(f"TEST MATRIX {int(test_idx[j])} AE (RECON)", ae_m)  # PRINT
+        print_metric_block(f"TEST MATRIX {int(test_idx[j])} AE (RECON, FULL GRID)", ae_m)  # PRINT
+        print_metric_block(f"TEST MATRIX {int(test_idx[j])} AE (RECON, ALIVE-ONLY)", ae_m_alive)  # PRINT -- NEW
         print_metric_block(f"TEST MATRIX {int(test_idx[j])} DMD (ONE-STEP)", dmd_m)  # PRINT
-        print_metric_block(f"TEST MATRIX {int(test_idx[j])} PREDICT (+{k})", pred_m)  # PRINT
+        print_metric_block(f"TEST MATRIX {int(test_idx[j])} PREDICT (+{k}, FULL GRID)", pred_m)  # PRINT
+        if pred_m_alive is not None:  # PRINT -- NEW
+            print_metric_block(f"TEST MATRIX {int(test_idx[j])} PREDICT (+{k}, ALIVE-ONLY)", pred_m_alive)  # PRINT
+        print_metric_block(f"TEST MATRIX {int(test_idx[j])} AE+DMD ROLLOUT x1 -> x{maxit} (MACRO, FULL GRID)", final_m)  # PRINT -- NEW
 
         if j == 0:  # SAVE ONE VISUAL EXAMPLE (GT + RECON + PREDICTION + TRUE NEXT)
             save_ground_truth_final_mask(td_test, D.ESCAPE_R, dirs["res"] / "test_gt_final_mask.png", scale=D.IMAGE_SCALE)  # GT MASK
             save_ground_truth_escape_iters(td_test, D.ESCAPE_R, dirs["res"] / "test_gt_escape_iters.png")  # GT FRACTAL
 
+            
             Z_recon = reconstruct_true_final_snapshot(td_test, enc, dec, device)  # RECON xT
-            save_final_snapshot_image(Z_recon, escape_r=D.ESCAPE_R, out_png=dirs["res"] / "test_recon_final_mask.png", mode="mask")  # RECON MASK
-            save_final_snapshot_image(Z_recon, escape_r=D.ESCAPE_R, out_png=dirs["res"] / "test_recon_final_snapshot_mag.png", mode="mag")  # RECON MAG
+            save_final_snapshot_image(Z_recon, escape_r=D.ESCAPE_R, out_png=dirs["res"] / "test_recon_final_mask.png",
+                                       mode="mask", alive_mask=alive_grid)  # RECON MASK
+            save_final_snapshot_image(Z_recon, escape_r=D.ESCAPE_R, out_png=dirs["res"] / "test_recon_final_snapshot_mag.png",
+                                       mode="mag", alive_mask=alive_grid)  # RECON MAG
 
-            save_final_snapshot_image(Z_pred, escape_r=D.ESCAPE_R, out_png=dirs["res"] / "test_pred_final_mask.png", mode="mask")  # PRED MASK
-            save_final_snapshot_image(Z_pred, escape_r=D.ESCAPE_R, out_png=dirs["res"] / "test_pred_final_snapshot_mag.png", mode="mag")  # PRED MAG
+            save_final_snapshot_image(Z_pred, escape_r=D.ESCAPE_R, out_png=dirs["res"] / "test_pred_final_mask.png",
+                                       mode="mask", alive_mask=alive_grid)  # PRED MASK
+            save_final_snapshot_image(Z_pred, escape_r=D.ESCAPE_R, out_png=dirs["res"] / "test_pred_final_snapshot_mag.png",
+                                       mode="mag", alive_mask=alive_grid)  # PRED MAG
             save_final_snapshot_image(Z_true_next, escape_r=D.ESCAPE_R, out_png=dirs["res"] / "test_true_next_final_mask.png", mode="mask")  # TRUE NEXT MASK
             save_final_snapshot_image(Z_true_next, escape_r=D.ESCAPE_R, out_png=dirs["res"] / "test_true_next_final_snapshot_mag.png", mode="mag")  # TRUE NEXT MAG
 
             iters_pred = teacher_forced_escape_iters(td_test, enc, dec, dmd, device, escape_r=D.ESCAPE_R)  # PRED FRACTAL
-            save_escape_image(iters_pred, max_iters=int(td_test.X_grid.shape[0]), out_png=dirs["res"] / "test_pred_escape_iters.png")  # SAVE FRACTAL
+            save_escape_image(iters_pred, max_iters=int(td_test.X_grid.shape[0]), out_png=dirs["res"] / "test_pred_escape_iters.png",
+                               alive_mask=alive_grid)  # SAVE FRACTAL
 
-    mean_ae = mean_metric_dict(ae_metrics_all)  # MEAN AE
+            # NEW: ROLLOUT-FROM-START VISUAL (STARTS FROM TRUE x1, ONLY EVER
+            # FEEDS BACK ITS OWN PREDICTIONS -- COMPARE VS test_gt_final_mask.png)
+            save_final_snapshot_image(Z_pred_final, escape_r=D.ESCAPE_R,
+                                       out_png=dirs["res"] / "test_rollout_from_start_final_mask.png",
+                                       mode="mask", alive_mask=alive_grid)  # ROLLOUT MASK
+            save_final_snapshot_image(Z_pred_final, escape_r=D.ESCAPE_R,
+                                       out_png=dirs["res"] / "test_rollout_from_start_final_mag.png",
+                                       mode="mag", alive_mask=alive_grid)  # ROLLOUT MAG
+
+    mean_ae = mean_metric_dict(ae_metrics_all)  # MEAN AE (FULL GRID)
+    mean_ae_alive = mean_metric_dict(ae_alive_metrics_all)  # NEW: MEAN AE (ALIVE-ONLY)
     mean_dmd = mean_metric_dict(dmd_metrics_all)  # MEAN DMD ONE-STEP
-    mean_pred = mean_metric_dict(pred_metrics_all)  # MEAN PREDICTION
-    print_metric_block("MEAN TEST AE (RECON)", mean_ae)  # PRINT
+    mean_pred = mean_metric_dict(pred_metrics_all)  # MEAN PREDICTION (FULL GRID)
+    print_metric_block("MEAN TEST AE (RECON, FULL GRID)", mean_ae)  # PRINT
+    print_metric_block("MEAN TEST AE (RECON, ALIVE-ONLY)", mean_ae_alive)  # PRINT -- NEW
     print_metric_block("MEAN TEST DMD (ONE-STEP)", mean_dmd)  # PRINT
-    print_metric_block(f"MEAN TEST PREDICT (+{k})", mean_pred)  # PRINT
+    print_metric_block(f"MEAN TEST PREDICT (+{k}, FULL GRID)", mean_pred)  # PRINT
+
+    mean_pred_alive = {}  # DEFAULT: NOTHING TO REPORT
+    if pred_alive_metrics_all:  # NEW: MEAN PREDICTION (ALIVE-ONLY), IF ANY TEST MATRIX HAD ALIVE PIXELS
+        mean_pred_alive_raw = mean_metric_dict(pred_alive_metrics_all)  # MEAN
+        print_metric_block(f"MEAN TEST PREDICT (+{k}, ALIVE-ONLY)", mean_pred_alive_raw)  # PRINT
+        mean_pred_alive = {f"pred_alive_{key}": val for key, val in mean_pred_alive_raw.items()}  # PREFIX FOR METRICS FILE
+
+    # ------------------------- NEW: MEAN ROLLOUT-FROM-START ------------------
+    mean_rollout_final = mean_metric_dict(rollout_final_metrics_all)  # TEST 1, FULL GRID, AVERAGED OVER TEST MATRICES
+    print_metric_block(f"MEAN TEST AE+DMD ROLLOUT x1 -> x{maxit} (MACRO, FULL GRID)", mean_rollout_final)  # PRINT
+    mean_rollout_final_alive = {}  # DEFAULT
+    if rollout_final_alive_metrics_all:  # AT LEAST ONE TEST MATRIX HAD ALIVE PIXELS
+        mean_rollout_final_alive_raw = mean_metric_dict(rollout_final_alive_metrics_all)  # MEAN
+        print_metric_block(f"MEAN TEST AE+DMD ROLLOUT x1 -> x{maxit} (MACRO, ALIVE-ONLY)", mean_rollout_final_alive_raw)  # PRINT
+        mean_rollout_final_alive = {f"rollout_final_alive_{key}": val for key, val in mean_rollout_final_alive_raw.items()}  # PREFIX
+
+    # MEAN OF EACH TEST MATRIX'S OWN rel_l2-vs-STEP CURVE -- rollout_step_curves_all
+    # IS (n_test_matrices, n_check); AVERAGE OVER MATRICES, KEEP THE PER-STEP AXIS.
+    rollout_step_metrics: dict[str, float] = {}  # FOR mean_test_metrics.txt
+    mean_step_curve: list[float] = []  # FOR THE PLOT
+    if rollout_step_curves_all:  # SHOULD ALWAYS BE TRUE IF n_check > 0
+        mean_step_curve = np.mean(np.asarray(rollout_step_curves_all, dtype=np.float64), axis=0).tolist()  # (n_check,)
+        for s, val in enumerate(mean_step_curve):  # SAVE EACH STEP
+            rollout_step_metrics[f"rollout_rel_l2_step_{s + 1:03d}"] = float(val)  # SAVE
+
+    mean_step_curve_alive: list[float] = []  # SAME, ALIVE-ONLY
+    if rollout_step_curves_alive_all:  # AT LEAST ONE TEST MATRIX CONTRIBUTED
+        mean_step_curve_alive = np.mean(np.asarray(rollout_step_curves_alive_all, dtype=np.float64), axis=0).tolist()
+        for s, val in enumerate(mean_step_curve_alive):  # SAVE EACH STEP
+            rollout_step_metrics[f"rollout_rel_l2_alive_step_{s + 1:03d}"] = float(val)  # SAVE
+
+    # NOTE: RELATIVE-L2-vs-STEP, NOT A LOSS CURVE -- LINEAR AXIS ON PURPOSE
+    # (SEE run_single_matrix.py FOR THE SAME REASONING).
+    if mean_step_curve:  # SOMETHING TO PLOT
+        save_loss_curve(
+            mean_step_curve, dirs["res"] / "rollout_rel_l2_vs_step.png",
+            f"AE+DMD Rollout Relative L2 Error vs Steps Beyond x1 (Mean Over {len(rollout_step_curves_all)} Test Matrices, Full Grid)",
+            xlabel="Steps beyond x1", ylabel="Relative L2 error", log_scale=False,
+        )
+    if mean_step_curve_alive:  # SOMETHING TO PLOT
+        save_loss_curve(
+            mean_step_curve_alive, dirs["res"] / "rollout_rel_l2_vs_step_alive.png",
+            f"AE+DMD Rollout Relative L2 Error vs Steps Beyond x1 (Mean Over {len(rollout_step_curves_alive_all)} Test Matrices, Alive-Only)",
+            xlabel="Steps beyond x1", ylabel="Relative L2 error", log_scale=False,
+        )
+    # ---------------------------------------------------------------------
+
     write_metrics_txt(  # SAVE
         dirs["res"] / "mean_test_metrics.txt",
-        {**mean_ae, **mean_dmd, **mean_pred, "predict_extra_steps": float(k), "dmd_spectral_radius": rho},
+        {
+            **mean_ae, **mean_ae_alive, **mean_dmd, **mean_pred, **mean_pred_alive,
+            "predict_extra_steps": float(k), "dmd_spectral_radius": rho,
+            **{f"rollout_final_{key}": val for key, val in mean_rollout_final.items()},
+            **mean_rollout_final_alive,
+            **rollout_step_metrics,
+        },
     )
 
 

@@ -10,6 +10,12 @@ import matplotlib.pyplot as plt  # PLOT
 
 from utils import to_tensor  # YOUR HELPER
 
+# NEW: FLAT TINT USED TO MARK "MODEL WAS NEVER TRAINED ON ANYTHING LIKE THIS
+# PIXEL" WHEN alive_mask IS PASSED TO save_final_snapshot_image / save_escape_image.
+# CHOSEN TO BE UNAMBIGUOUS AGAINST BOTH A 0/255 BINARY MASK AND A 0-255
+# GRAYSCALE MAGNITUDE RAMP -- NEITHER OF THOSE CAN EVER PRODUCE THIS COLOUR.
+DEAD_PIXEL_TINT = (255, 205, 205)  # LIGHT RED/PINK, RGB
+
 # =============================== GRID BUILDER ================================
 def build_c_grid(  # MAKE GRID
     *,
@@ -118,13 +124,13 @@ def reconstruct_mandelbrot(  # RECON SET
     iters[alive] = int(max_iters)  # NEVER ESCAPED
     return iters.reshape(int(grid_n), int(grid_n))  # IMAGE
 
-
 # =============================== IMAGE SAVE ==================================
 def save_escape_image(  # SAVE PNG
     escape_iters: np.ndarray,  # (H,W)
     *,
     max_iters: int,  # MAX
     out_png: str | Path,  # PATH
+    alive_mask: np.ndarray | None = None,  # NEW: (H,W) BOOL, SEE save_final_snapshot_image
 ) -> str:
     out_png = Path(out_png)  # PATH
     out_png.parent.mkdir(parents=True, exist_ok=True)  # MKDIR
@@ -133,7 +139,12 @@ def save_escape_image(  # SAVE PNG
     norm = esc / float(max_iters)  # 0..1
     img = (255.0 * norm).clip(0, 255).astype(np.uint8)  # 8BIT
     img = 255 - img  # INVERT
-    im = Image.fromarray(img, mode="L")  # GRAY
+
+    if alive_mask is None:  # OLD BEHAVIOUR, UNCHANGED
+        im = Image.fromarray(img, mode="L")  # GRAY
+    else:  # NEW: FLAG OUT-OF-DOMAIN PIXELS
+        im = _tint_dead_pixels(img, alive_mask)  # RGB WITH DEAD_PIXEL_TINT
+
     im.save(out_png)  # SAVE
     return str(out_png)  # RETURN
 
@@ -228,6 +239,20 @@ def reconstruct_final_snapshot(  # FINAL STATE IMAGE
 
     return X_out.reshape(int(grid_n), int(grid_n), 2 * state_dim)  # RESHAPE
 
+# ======================= NEW: FLAG OUT-OF-DOMAIN PIXELS =======================
+def _tint_dead_pixels(img_l: np.ndarray, alive_mask: np.ndarray) -> Image.Image:  # GRAY -> RGB, DEAD PIXELS TINTED
+    """TURN AN (H,W) uint8 GRAYSCALE ARRAY INTO AN RGB PIL IMAGE WHERE EVERY
+    PIXEL alive_mask MARKS FALSE IS REPLACED WITH DEAD_PIXEL_TINT.
+    """
+    alive_mask = np.asarray(alive_mask, dtype=bool)  # BOOL
+    if alive_mask.shape != img_l.shape:  # SANITY
+        raise ValueError(f"alive_mask SHAPE {alive_mask.shape} != IMAGE SHAPE {img_l.shape}")  # ERROR
+
+    rgb = np.stack([img_l, img_l, img_l], axis=-1).astype(np.uint8)  # GRAY -> RGB
+    tint = np.array(DEAD_PIXEL_TINT, dtype=np.uint8)  # TINT COLOUR
+    rgb[~alive_mask] = tint  # PAINT DEAD PIXELS
+    return Image.fromarray(rgb, mode="RGB")  # RETURN
+
 # ======================= SAVE FINAL SNAPSHOT IMAGE ===========================
 def save_final_snapshot_image(  # SAVE FINAL PNG
     Z_final: np.ndarray,  # (H,W,2*D)
@@ -235,6 +260,7 @@ def save_final_snapshot_image(  # SAVE FINAL PNG
     escape_r: float,  # SCALE
     out_png: str | Path,  # PATH
     mode: str = "mag",  # "mag" OR "angle" OR "mask"
+    alive_mask: np.ndarray | None = None,  
 ) -> str:
     out_png = Path(out_png)  # PATH
     out_png.parent.mkdir(parents=True, exist_ok=True)  # MKDIR
@@ -256,5 +282,9 @@ def save_final_snapshot_image(  # SAVE FINAL PNG
         norm = mag / float(escape_r)  # [0,1]
         img = (255.0 * norm).clip(0, 255).astype(np.uint8)  # 8BIT
 
-    Image.fromarray(img, mode="L").save(out_png)  # SAVE
+    if alive_mask is None:  # OLD BEHAVIOUR, UNCHANGED (E.G. GROUND-TRUTH IMAGES)
+        Image.fromarray(img, mode="L").save(out_png)  # SAVE
+    else:  # NEW: FLAG OUT-OF-DOMAIN PIXELS INSTEAD OF LETTING THEM POLLUTE THE IMAGE
+        _tint_dead_pixels(img, alive_mask).save(out_png)  # SAVE RGB
+
     return str(out_png)  # RETURN
