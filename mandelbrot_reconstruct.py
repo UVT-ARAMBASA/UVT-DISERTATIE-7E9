@@ -10,10 +10,6 @@ import matplotlib.pyplot as plt  # PLOT
 
 from utils import to_tensor  # YOUR HELPER
 
-# NEW: FLAT TINT USED TO MARK "MODEL WAS NEVER TRAINED ON ANYTHING LIKE THIS
-# PIXEL" WHEN alive_mask IS PASSED TO save_final_snapshot_image / save_escape_image.
-# CHOSEN TO BE UNAMBIGUOUS AGAINST BOTH A 0/255 BINARY MASK AND A 0-255
-# GRAYSCALE MAGNITUDE RAMP -- NEITHER OF THOSE CAN EVER PRODUCE THIS COLOUR.
 DEAD_PIXEL_TINT = (255, 205, 205)  # LIGHT RED/PINK, RGB
 
 # =============================== GRID BUILDER ================================
@@ -185,9 +181,6 @@ def reconstruct_final_snapshot(  # FINAL STATE IMAGE
 ) -> np.ndarray:  # (H,W,2*D)
     P = int(C.shape[0])  # COUNT
 
-    # IMPORTANT:
-    # TRAINING STORES x1, x2, ..., xT  # NOT x0
-    # x1 CORRESPONDS TO z1 = c (REPEATED IN ALL COMPONENTS) WHEN z0 = 0
     X = np.zeros((P, feat_dim), dtype=np.float32)  # INIT FULL
     X[:, 0:state_dim] = C[:, 0:1].astype(np.float32)  # x1 REAL PART IN ALL COMPONENTS
     X[:, state_dim:2 * state_dim] = C[:, 1:2].astype(np.float32)  # x1 IMAG PART IN ALL COMPONENTS
@@ -241,9 +234,7 @@ def reconstruct_final_snapshot(  # FINAL STATE IMAGE
 
 # ======================= NEW: FLAG OUT-OF-DOMAIN PIXELS =======================
 def _tint_dead_pixels(img_l: np.ndarray, alive_mask: np.ndarray) -> Image.Image:  # GRAY -> RGB, DEAD PIXELS TINTED
-    """TURN AN (H,W) uint8 GRAYSCALE ARRAY INTO AN RGB PIL IMAGE WHERE EVERY
-    PIXEL alive_mask MARKS FALSE IS REPLACED WITH DEAD_PIXEL_TINT.
-    """
+
     alive_mask = np.asarray(alive_mask, dtype=bool)  # BOOL
     if alive_mask.shape != img_l.shape:  # SANITY
         raise ValueError(f"alive_mask SHAPE {alive_mask.shape} != IMAGE SHAPE {img_l.shape}")  # ERROR
@@ -260,7 +251,8 @@ def save_final_snapshot_image(  # SAVE FINAL PNG
     escape_r: float,  # SCALE
     out_png: str | Path,  # PATH
     mode: str = "mag",  # "mag" OR "angle" OR "mask"
-    alive_mask: np.ndarray | None = None,  
+    alive_mask: np.ndarray | None = None,  # NEW: (H,W) BOOL -- WHERE THE MODEL IS ACTUALLY IN-DOMAIN.
+    
 ) -> str:
     out_png = Path(out_png)  # PATH
     out_png.parent.mkdir(parents=True, exist_ok=True)  # MKDIR

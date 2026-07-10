@@ -12,6 +12,7 @@ from utils import to_tensor  # HELPER
 import defines as D  # DEFAULT FOR log_scale
 
 # ============================== LOSS CURVE ===================================
+
 def save_loss_curve(  # SAVE LOSS
     losses: list[float],
     out_png: str | Path,
@@ -98,14 +99,7 @@ def _alive_row_mask(X: np.ndarray, escape_r: float) -> np.ndarray:  # PER-ROW HE
 
 
 def _exact_trained_row_mask(td) -> np.ndarray:  # EXACT ROW MASK OVER td.X, MATCHING X1/X2 MEMBERSHIP
-    """Boolean mask over td.X's (T*P,) rows that is True EXACTLY for rows
-    belonging to a grid point kept in X1/X2 -- i.e. td.meta["alive_mask_grid"]
-    tiled across every stored time step -- rather than a per-row magnitude
-    approximation. Exact when keep_escaped_fraction == 0.0 (the default: see
-    alive_mask_grid's own docstring for the >0 case). Falls back to the
-    per-row heuristic if td doesn't carry what's needed to build the exact
-    mask (e.g. a differently-shaped custom td).
-    """
+
     meta = getattr(td, "meta", None) or {}  # META DICT
     alive_grid = meta.get("alive_mask_grid", None)  # (H,W) BOOL, PER GRID POINT
     T = meta.get("max_iters", None)  # HOW MANY STORED TIME STEPS
@@ -122,9 +116,6 @@ def _exact_trained_row_mask(td) -> np.ndarray:  # EXACT ROW MASK OVER td.X, MATC
         classify_r = float(meta.get("classify_r", 2.0))  # BEST-EFFORT FALLBACK
         return _alive_row_mask(td.X, classify_r)  # APPROXIMATION
 
-    # td.X IS X_tp.reshape(T*P, feat) -- t VARIES SLOWEST, p VARIES FASTEST
-    # WITHIN EACH t-BLOCK (SEE prepare_training_data.py) -- SO TILING THE
-    # (P,)-LENGTH alive_flat T TIMES LINES UP EXACTLY WITH td.X's ROW ORDER.
     return np.tile(alive_flat, T)  # (T*P,) EXACT MASK
 
 

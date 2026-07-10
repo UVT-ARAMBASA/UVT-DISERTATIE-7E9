@@ -1,38 +1,10 @@
 # =========================== TENSOR DIAGNOSTICS ==============================
-"""
-Standalone debug helper for tracking down non-finite (NaN/Inf) values and
-near-singular batches feeding into SVD-based fits (e.g. fit_batch_dmd_matrix).
-
-Usage:
-    from tensor_diagnostics import check_tensor
-
-    check_tensor(z1, name="z1")   # drop this right before the fragile op
-
-Run this file directly (`python tensor_diagnostics.py`) to sanity-check it
-against a clean tensor and a couple of broken ones.
-"""
 from __future__ import annotations
 
 import torch
 
 
 def check_tensor(t: torch.Tensor, name: str = "tensor") -> dict:
-    """
-    Report on a tensor right before it goes into something numerically
-    fragile (SVD, solve, etc).
-
-    - Non-finite: reports NaN vs Inf separately, how many bad entries there
-      are, and the min/max of whatever finite entries remain. (t.min()/t.max()
-      alone just return NaN once any NaN is present, which hides everything
-      else -- this masks those out first so you still see the real range.)
-    - Finite + 2D: reports rank and smallest singular value. A matrix can be
-      finite and nonzero in every entry and still be (near-)singular, which is
-      what actually breaks a differentiable SVD -- this is the check that
-      "no 0 or inf in the matrix" doesn't cover.
-
-    Returns the same info as a dict, in case you want to act on it (skip the
-    batch, log it, raise) instead of just reading the printout.
-    """
     info: dict = {"name": name, "shape": tuple(t.shape), "dtype": str(t.dtype)}
 
     finite_mask = torch.isfinite(t)

@@ -6,9 +6,6 @@ import torch  # TORCH CORE
 import torch.nn as nn  # NN MODULE
 
 
-# LEARNS z -> (A z)^2 DIRECTLY; c IS READ FROM THE INPUT AND ADDED BACK AS A
-# FIXED, NON-LEARNED TERM (NOT A GLOBAL BIAS), SO ONE SET OF WEIGHTS WORKS
-# ACROSS THE WHOLE C-GRID -- SAME TRICK AS commonlib.py:split_dataset/torch_predict
 class QuadraticPredictor(nn.Module):  # QUADRATIC PREDICTOR CLASS
     def __init__(self, state_dim: int, *, rank: int | None = None, bias: bool = False) -> None:  # INIT
         super().__init__()  # CALL SUPER

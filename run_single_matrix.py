@@ -99,8 +99,7 @@ def run_single_matrix(device: torch.device | None = None) -> None:  # RUN SINGLE
         device=device,  # DEVICE
     )
 
-    # NOTE: save_loss_curve NOW DEFAULTS TO log-scale (SEE eval_matrix_dmd_ae.py /
-    # defines.LOSS_CURVES_LOG_SCALE) AND CAN OVERLAY THE VALIDATION CURVE.
+
     has_val = bool(np.any(np.isfinite(val_losses))) if len(val_losses) else False  # ANYTHING TO OVERLAY?
     save_loss_curve(
         losses, dirs["res"] / "loss_curve.png", "Single Matrix AE Loss",
@@ -177,6 +176,7 @@ def run_single_matrix(device: torch.device | None = None) -> None:  # RUN SINGLE
     rollout_final_m = next_step_prediction_metrics(Z_pred_final, Z_true_final)
     print_metric_block(f"SINGLE MATRIX AE+DMD ROLLOUT x1 -> x{maxit} (MACRO, FULL GRID)", rollout_final_m)
 
+    # ----
     rollout_final_m_alive = None  # DEFAULT
     if alive_grid is not None and bool(np.any(alive_grid)):  # HAVE A USEFUL MASK
         rollout_final_m_alive = next_step_prediction_metrics(
@@ -213,10 +213,6 @@ def run_single_matrix(device: torch.device | None = None) -> None:  # RUN SINGLE
             rollout_step_metrics[f"rollout_rel_l2_alive_step_{s + 1:03d}"] = float(m_s_alive["pred_rel_l2"])
             rollout_rel_l2_alive.append(float(m_s_alive["pred_rel_l2"]))
 
-    # NOTE: THESE ARE RELATIVE-L2-vs-STEP CURVES, NOT LOSS CURVES -- THEY DON'T
-    # SPAN ENOUGH ORDERS OF MAGNITUDE TO NEED A LOG AXIS, SO EXPLICITLY KEEP
-    # THEM LINEAR (log_scale=False) EVEN THOUGH save_loss_curve NOW DEFAULTS
-    # TO LOG FOR EVERYTHING ELSE.
     save_loss_curve(
         rollout_rel_l2, dirs["res"] / "rollout_rel_l2_vs_step.png",
         "AE+DMD Rollout Relative L2 Error vs Steps Beyond x1 (Full Grid)",

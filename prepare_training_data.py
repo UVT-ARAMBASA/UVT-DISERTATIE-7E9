@@ -36,7 +36,7 @@ def _sanitize_finite(x: np.ndarray, name: str) -> np.ndarray:  # FINITE FIX
     return np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)  # FIX
 
 def determine_escape_radius(A: np.ndarray) -> float:  # MATRIX-DEPENDENT ESCAPE RADIUS (fikl's commonlib.py)
-    
+
     A = np.asarray(A, dtype=np.float64)  # FP64 FOR THE SVD
     if A.ndim != 2 or A.shape[0] != A.shape[1]:  # SQUARE CHECK
         raise ValueError(f"'A' must be a square matrix: {A.shape}")  # ERROR
@@ -254,7 +254,7 @@ def _build_matrix_c_grid_training_data_from_A(  # BUILD GRID DATA WITH GIVEN A
     keep_escaped_fraction: float = 0.0,  # EXPERIMENTAL: RANDOMLY KEEP THIS FRACTION OF ESCAPED TRAJECTORIES TOO
     keep_escaped_seed: int = 0,  # REPRODUCIBLE SUBSAMPLE
 ) -> TrainingData:
-
+    
     A = np.asarray(A, dtype=np.float32)  # FP32
 
     d = int(A.shape[0])  # STATE DIM

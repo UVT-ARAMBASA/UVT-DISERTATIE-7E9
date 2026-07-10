@@ -101,8 +101,7 @@ def fit_batch_dmd_matrix(
     A_t = torch.linalg.solve(G + ridge * eye, H)
     return A_t.T
 def compute_target_scale(*arrays_or_tensors, eps: float = 1e-12) -> float:  # DATA-SCALE FOR LOSS NORMALISATION
-    """MEAN SQUARED MAGNITUDE ACROSS THE GIVEN ARRAYS/TENSORS.
-    """
+    
     total = 0.0  # SUM OF SQUARES
     count = 0  # ELEMENT COUNT
     for arr in arrays_or_tensors:  # LOOP INPUTS

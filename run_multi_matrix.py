@@ -78,8 +78,17 @@ def run_multi_matrix(device: torch.device | None = None) -> None:  # RUN MULTI E
         filter_escaped=D.FILTER_ESCAPED_FOR_TRAINING,  # DROP ESCAPED TRAJECTORIES FROM X1/X2 (fikl's PRACTICE)
     )
 
-    save_ground_truth_final_mask(td_train_list[0], D.ESCAPE_R, dirs["td"] / "train_example_gt_final_mask.png", scale=D.IMAGE_SCALE)  # TRAIN GT MASK
-    save_ground_truth_escape_iters(td_train_list[0], D.ESCAPE_R, dirs["td"] / "train_example_gt_escape_iters.png")  # TRAIN GT FRACTAL
+    for i, td in enumerate(td_train_list):  # ONE GT IMAGE PER TRAIN MATRIX (WAS: ONLY INDEX 0)
+        matrix_id = int(train_idx[i])  # ACTUAL MATRIX INDEX, NOT LIST POSITION
+        save_ground_truth_final_mask(
+            td, D.ESCAPE_R,
+            dirs["td"] / f"train_gt_final_mask_{matrix_id:02d}.png",
+            scale=D.IMAGE_SCALE,
+        )  # TRAIN GT MASK
+        save_ground_truth_escape_iters(
+            td, D.ESCAPE_R,
+            dirs["td"] / f"train_gt_escape_iters_{matrix_id:02d}.png",
+        )  # TRAIN GT FRACTAL
 
     for td in td_train_list:  # FREE BIG GRIDS
         td.X_grid = None  # NOT NEEDED FOR TRAINING
@@ -140,7 +149,6 @@ def run_multi_matrix(device: torch.device | None = None) -> None:  # RUN MULTI E
     pred_metrics_all = []  # STORE NEXT-STEP PREDICTION METRICS (FULL GRID)
     pred_alive_metrics_all = []  # NEW: STORE NEXT-STEP PREDICTION METRICS (ALIVE-ONLY)
 
-    # ============================================================
     maxit = int(D.TRAIN_MAX_ITERS)  # T
     n_check = min(int(getattr(D, "PREDICT_ROLLOUT_CHECK_STEPS", 10)), max(maxit - 1, 0))  # HOW MANY STEPS TO CHECK
     rollout_final_metrics_all = []  # TEST 1 (MACRO), FULL GRID, PER TEST MATRIX
@@ -151,6 +159,8 @@ def run_multi_matrix(device: torch.device | None = None) -> None:  # RUN MULTI E
     for j, td_test in enumerate(td_test_list):  # LOOP HELD-OUT TEST MATRICES
         A_test = A_all[int(test_idx[j])]  # TRUE MATRIX FOR THIS TEST CASE
         alive_grid = td_test.meta.get("alive_mask_grid", None)  # (H,W) BOOL -- WHERE THE MODEL IS IN-DOMAIN
+
+
         ae_m = autoencoder_reconstruction_metrics(enc, dec, td_test.X, device)  # RECON METRICS, FULL GRID (DIAGNOSTIC)
         ae_m_alive = autoencoder_reconstruction_metrics_alive(enc, dec, td_test, device)  # NEW
         dmd_m = dmd_one_step_metrics(enc, dec, dmd, td_test.X1, td_test.X2, device)  # ONE-STEP METRICS
@@ -219,7 +229,7 @@ def run_multi_matrix(device: torch.device | None = None) -> None:  # RUN MULTI E
             save_ground_truth_final_mask(td_test, D.ESCAPE_R, dirs["res"] / "test_gt_final_mask.png", scale=D.IMAGE_SCALE)  # GT MASK
             save_ground_truth_escape_iters(td_test, D.ESCAPE_R, dirs["res"] / "test_gt_escape_iters.png")  # GT FRACTAL
 
-            
+
             Z_recon = reconstruct_true_final_snapshot(td_test, enc, dec, device)  # RECON xT
             save_final_snapshot_image(Z_recon, escape_r=D.ESCAPE_R, out_png=dirs["res"] / "test_recon_final_mask.png",
                                        mode="mask", alive_mask=alive_grid)  # RECON MASK
@@ -270,8 +280,7 @@ def run_multi_matrix(device: torch.device | None = None) -> None:  # RUN MULTI E
         print_metric_block(f"MEAN TEST AE+DMD ROLLOUT x1 -> x{maxit} (MACRO, ALIVE-ONLY)", mean_rollout_final_alive_raw)  # PRINT
         mean_rollout_final_alive = {f"rollout_final_alive_{key}": val for key, val in mean_rollout_final_alive_raw.items()}  # PREFIX
 
-    # MEAN OF EACH TEST MATRIX'S OWN rel_l2-vs-STEP CURVE -- rollout_step_curves_all
-    # IS (n_test_matrices, n_check); AVERAGE OVER MATRICES, KEEP THE PER-STEP AXIS.
+
     rollout_step_metrics: dict[str, float] = {}  # FOR mean_test_metrics.txt
     mean_step_curve: list[float] = []  # FOR THE PLOT
     if rollout_step_curves_all:  # SHOULD ALWAYS BE TRUE IF n_check > 0
@@ -285,8 +294,6 @@ def run_multi_matrix(device: torch.device | None = None) -> None:  # RUN MULTI E
         for s, val in enumerate(mean_step_curve_alive):  # SAVE EACH STEP
             rollout_step_metrics[f"rollout_rel_l2_alive_step_{s + 1:03d}"] = float(val)  # SAVE
 
-    # NOTE: RELATIVE-L2-vs-STEP, NOT A LOSS CURVE -- LINEAR AXIS ON PURPOSE
-    # (SEE run_single_matrix.py FOR THE SAME REASONING).
     if mean_step_curve:  # SOMETHING TO PLOT
         save_loss_curve(
             mean_step_curve, dirs["res"] / "rollout_rel_l2_vs_step.png",

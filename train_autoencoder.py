@@ -148,7 +148,6 @@ def train_autoencoder(  # TRAIN AE + DMD-LIKE PIPELINE
     print(f"[TRAIN AE] train/val split: {n_train_total} train rows, {n_val_total} val rows "
           f"(AE_VAL_FRACTION={val_fraction:g})")  # LOG SO IT'S NEVER A MYSTERY
     # ---------------------------------------------------------------------
-
     if bool(getattr(D, "AE_LOSS_AUTO_SCALE", True)):  # OPT-OUT SWITCH
         loss_scale = compute_target_scale(*X1_train_list, *X2_train_list)  # MEAN(X^2) ACROSS TRAIN BLOCKS
     else:
@@ -270,9 +269,6 @@ def train_autoencoder(  # TRAIN AE + DMD-LIKE PIPELINE
         enc.train(); dec.train()  # BACK TO TRAIN MODE
         val_losses.append(v)  # STORE (NaN IF NO VAL SET)
 
-        # WHICH SIGNAL DRIVES "BEST MODEL" / SCHEDULER: VALIDATION IF WE HAVE
-        # ONE (MATCHES fikl's torch_train), ELSE FALL BACK TO TRAIN LOSS (OLD
-        # BEHAVIOUR, AE_VAL_FRACTION=0.0).
         monitor = v if have_val else s  # WHAT WE TRACK "BEST" AGAINST
 
         if scheduler is not None:  # STEP LR SCHEDULER ON THE MONITORED LOSS
