@@ -1,92 +1,88 @@
-# #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=# losses.py #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=#
-from __future__ import annotations  # ENABLE MODERN TYPE HINTS
+from __future__ import annotations
 
-# #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=# IMPORTS #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=#
-import numpy as np  # NUMPY (FOR compute_target_scale ON RAW ARRAYS)
-import torch  # TORCH
-import torch.nn.functional as F  # TORCH FUNCTIONAL LOSSES
+import numpy as np
+import torch
+import torch.nn.functional as F
 from tensor_diagnostics import check_tensor
 import defines
 
 
-# #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=# BASIC LOSS FACTORY #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=#
-def make_reconstruction_loss(  # MAKE BASIC RECONSTRUCTION LOSS
-    loss_mode: int = 0,  # 0=MSE, 1=MAE, 2=HUBER, 3=WEIGHTED_MSE
-    beta: float = 0.05,  # HUBER BETA
-    eps: float = 1e-6,  # EPSILON FOR SAFE DIVISION
-    w_pow: float = 1.0,  # WEIGHT POWER
+def make_reconstruction_loss(
+    loss_mode: int = 0,
+    beta: float = 0.05,
+    eps: float = 1e-6,
+    w_pow: float = 1.0,
 ):
-    if loss_mode == 0:  # MSE LOSS
-        def loss_fn(x_hat: torch.Tensor, x: torch.Tensor) -> torch.Tensor:  # LOSS FUNCTION
-            return torch.mean((x_hat - x) ** 2)  # RETURN MSE
+    if loss_mode == 0:
+        def loss_fn(x_hat: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+            return torch.mean((x_hat - x) ** 2)
 
-        return loss_fn  # RETURN FUNCTION
+        return loss_fn
 
-    if loss_mode == 1:  # MAE LOSS
-        def loss_fn(x_hat: torch.Tensor, x: torch.Tensor) -> torch.Tensor:  # LOSS FUNCTION
-            return torch.mean(torch.abs(x_hat - x))  # RETURN MAE
+    if loss_mode == 1:
+        def loss_fn(x_hat: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+            return torch.mean(torch.abs(x_hat - x))
 
-        return loss_fn  # RETURN FUNCTION
+        return loss_fn
 
-    if loss_mode == 2:  # HUBER LOSS
-        def loss_fn(x_hat: torch.Tensor, x: torch.Tensor) -> torch.Tensor:  # LOSS FUNCTION
-            return F.smooth_l1_loss(x_hat, x, beta=beta)  # RETURN HUBER
+    if loss_mode == 2:
+        def loss_fn(x_hat: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+            return F.smooth_l1_loss(x_hat, x, beta=beta)
 
-        return loss_fn  # RETURN FUNCTION
+        return loss_fn
 
-    if loss_mode == 3:  # WEIGHTED MSE LOSS
-        def loss_fn(x_hat: torch.Tensor, x: torch.Tensor) -> torch.Tensor:  # LOSS FUNCTION
-            weights = 1.0 / (torch.abs(x) ** w_pow + eps)  # SMALLER WEIGHT FOR HUGE VALUES
-            return torch.mean(weights * (x_hat - x) ** 2)  # RETURN WEIGHTED MSE
+    if loss_mode == 3:
+        def loss_fn(x_hat: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+            weights = 1.0 / (torch.abs(x) ** w_pow + eps)
+            return torch.mean(weights * (x_hat - x) ** 2)
 
-        return loss_fn  # RETURN FUNCTION
+        return loss_fn
 
-    raise ValueError(f"UNKNOWN LOSS MODE: {loss_mode}")  # INVALID LOSS MODE
+    raise ValueError(f"UNKNOWN LOSS MODE: {loss_mode}")
 
 
-# #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=# DMD FIT INSIDE LOSS #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=#
-def fit_batch_dmd_matrix_OLD(  # FIT SMALL DMD MATRIX ON CURRENT BATCH
-    z1: torch.Tensor,  # LATENT STATES AT TIME T
-    z2: torch.Tensor,  # LATENT STATES AT TIME T+1
-    ridge: float = 1e-6,  # RIDGE REGULARISATION
+def fit_batch_dmd_matrix_OLD(
+    z1: torch.Tensor,
+    z2: torch.Tensor,
+    ridge: float = 1e-6,
 ) -> torch.Tensor:
-    latent_dim = z1.shape[1]  # LATENT DIMENSION
+    latent_dim = z1.shape[1]
 
-    eye = torch.eye(  # IDENTITY MATRIX
-        latent_dim,  # SIZE
-        dtype=z1.dtype,  # SAME TYPE
-        device=z1.device,  # SAME DEVICE
+    eye = torch.eye(
+        latent_dim,
+        dtype=z1.dtype,
+        device=z1.device,
     )
 
-    G = z1.T @ z1  # GRAM MATRIX
-    H = z1.T @ z2  # CROSS MATRIX
+    G = z1.T @ z1
+    H = z1.T @ z2
 
-    A_t = torch.linalg.solve(G + ridge * eye, H)  # SOLVE Z1 @ A_T = Z2
-    A = A_t.T  # TRANSPOSE SO WE CAN USE z @ A.T
+    A_t = torch.linalg.solve(G + ridge * eye, H)
+    A = A_t.T
 
-    return A  # RETURN DMD MATRIX
+    return A
 
 def fit_batch_dmd_matrix_NEW(
-        z1: torch.Tensor, # LATENT STATES AT TIME T
-        z2: torch.Tensor, # LATENT STATES AT TIME T+1
-        ridge: float = defines.DMD_RIDGE, #RIDGE REGULARISATION FROM DEFINES
+        z1: torch.Tensor,
+        z2: torch.Tensor,
+        ridge: float = defines.DMD_RIDGE,
 ) -> torch.Tensor:
-    U, S, Vh = torch.linalg.svd(z1, full_matrices=False) # SVD OF SNAPSHOTS
-    S_inv = S / (S * S + ridge) #DAMPED 1/sigma (REGULARISED PINV)
-    z1_pinv = (Vh.transpose(-1,-2) * S_inv) @ U.transpose(-1,-2)  # (dim, N)
-    A_t = z1_pinv @ z2 # (dimension, dimension) = z1hat + z2
+    U, S, Vh = torch.linalg.svd(z1, full_matrices=False)
+    S_inv = S / (S * S + ridge)
+    z1_pinv = (Vh.transpose(-1,-2) * S_inv) @ U.transpose(-1,-2)
+    A_t = z1_pinv @ z2
     return A_t.transpose(-1,-2)
 
 def fit_batch_dmd_matrix__CU_CHECKER(
-        z1: torch.Tensor, # LATENT STATES AT TIME T
-        z2: torch.Tensor, # LATENT STATES AT TIME T+1
-        ridge: float = defines.DMD_RIDGE, #RIDGE REGULARISATION FROM DEFINES
+        z1: torch.Tensor,
+        z2: torch.Tensor,
+        ridge: float = defines.DMD_RIDGE,
 ) -> torch.Tensor:
-    check_tensor(z1, name="z1")  # <-- one line, prints right before the crash poin
-    U, S, Vh = torch.linalg.svd(z1, full_matrices=False) # SVD OF SNAPSHOTS
-    S_inv = S / (S * S + ridge) #DAMPED 1/sigma (REGULARISED PINV)
-    z1_pinv = (Vh.transpose(-1,-2) * S_inv) @ U.transpose(-1,-2)  # (dim, N)
-    A_t = z1_pinv @ z2 # (dimension, dimension) = z1hat + z2
+    check_tensor(z1, name="z1")
+    U, S, Vh = torch.linalg.svd(z1, full_matrices=False)
+    S_inv = S / (S * S + ridge)
+    z1_pinv = (Vh.transpose(-1,-2) * S_inv) @ U.transpose(-1,-2)
+    A_t = z1_pinv @ z2
     return A_t.transpose(-1,-2)
 
 def fit_batch_dmd_matrix(
@@ -94,70 +90,69 @@ def fit_batch_dmd_matrix(
         z2: torch.Tensor,
         ridge: float = defines.DMD_RIDGE,
 ) -> torch.Tensor:
+    # PER-BATCH DMD MATRIX (RIDGE LEAST-SQUARES) USED INSIDE THE LOSS
     latent_dim = z1.shape[1]
     eye = torch.eye(latent_dim, dtype=z1.dtype, device=z1.device)
     G = z1.T @ z1
     H = z1.T @ z2
     A_t = torch.linalg.solve(G + ridge * eye, H)
     return A_t.T
-def compute_target_scale(*arrays_or_tensors, eps: float = 1e-12) -> float:  # DATA-SCALE FOR LOSS NORMALISATION
-    
-    total = 0.0  # SUM OF SQUARES
-    count = 0  # ELEMENT COUNT
-    for arr in arrays_or_tensors:  # LOOP INPUTS
-        if arr is None:  # SKIP
+def compute_target_scale(*arrays_or_tensors, eps: float = 1e-12) -> float:
+    total = 0.0
+    count = 0
+    for arr in arrays_or_tensors:
+        if arr is None:
             continue
-        if isinstance(arr, torch.Tensor):  # TORCH
-            total += float(torch.sum(arr.detach() ** 2).cpu())  # ACCUM
-            count += int(arr.numel())  # ACCUM
-        else:  # NUMPY / ARRAY-LIKE
-            a = np.asarray(arr, dtype=np.float64) if not isinstance(arr, np.ndarray) else arr  # NP
-            total += float(np.sum(a.astype(np.float64) ** 2))  # ACCUM
-            count += int(a.size)  # ACCUM
-    if count == 0:  # NOTHING GIVEN
-        return 1.0  # NEUTRAL SCALE
-    return max(total / count, eps)  # MEAN SQUARE, FLOORED
+        if isinstance(arr, torch.Tensor):
+            total += float(torch.sum(arr.detach() ** 2).cpu())
+            count += int(arr.numel())
+        else:
+            a = np.asarray(arr, dtype=np.float64) if not isinstance(arr, np.ndarray) else arr
+            total += float(np.sum(a.astype(np.float64) ** 2))
+            count += int(a.size)
+    if count == 0:
+        return 1.0
+    return max(total / count, eps)
 
 
-# #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=# KOOPMAN AE LOSS #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=#
-def koopman_ae_loss(  # AUTOENCODER + LATENT DMD LOSS
-    x1: torch.Tensor,  # TRUE STATE AT TIME T
-    x2: torch.Tensor,  # TRUE STATE AT TIME T+1
-    z1: torch.Tensor,  # ENCODED STATE AT TIME T
-    z2: torch.Tensor,  # ENCODED STATE AT TIME T+1
-    x1_rec: torch.Tensor,  # RECONSTRUCTED X1
-    x2_rec: torch.Tensor,  # RECONSTRUCTED X2
-    decoder,  # DECODER MODEL
-    base_loss,  # MSE / MAE / HUBER / WEIGHTED MSE
-    alpha_rec: float = 0.5,  # RECONSTRUCTION WEIGHT
-    alpha_lin: float = 0.5,  # LATENT DMD WEIGHT
-    alpha_pred: float = 2.0,  # DECODED PREDICTION WEIGHT
-    ridge: float = 1e-6,  # DMD RIDGE
-    scale: float = 1.0,  # DIVIDE THE WHOLE LOSS BY THIS (SEE compute_target_scale) -- 1.0 = OLD RAW-MSE BEHAVIOUR
+def koopman_ae_loss(
+    x1: torch.Tensor,
+    x2: torch.Tensor,
+    z1: torch.Tensor,
+    z2: torch.Tensor,
+    x1_rec: torch.Tensor,
+    x2_rec: torch.Tensor,
+    decoder,
+    base_loss,
+    alpha_rec: float = 0.5,
+    alpha_lin: float = 0.5,
+    alpha_pred: float = 2.0,
+    ridge: float = 1e-6,
+    scale: float = 1.0,
 ):
-    A = fit_batch_dmd_matrix(z1, z2, ridge=ridge)  # FIT BATCH DMD MATRIX
+    # ENC -> DMD -> DEC  (z1, z2 ARRIVE ALREADY ENCODED FROM THE CALLER)
+    A = fit_batch_dmd_matrix(z1, z2, ridge=ridge)   # DMD ON THE LATENT BATCH
+    z2_pred = z1 @ A.T                               # STEP THE LATENT FORWARD
+    x2_pred = decoder(z2_pred)                       # DECODE THE PREDICTED NEXT STATE
 
-    z2_pred = z1 @ A.T  # PREDICT NEXT LATENT STATE
-    x2_pred = decoder(z2_pred)  # DECODE PREDICTED NEXT STATE
+    loss_rec = base_loss(x1_rec, x1) + base_loss(x2_rec, x2)   # RECONSTRUCTION
+    loss_lin = base_loss(z2_pred, z2)                          # LATENT LINEARITY
+    loss_pred = base_loss(x2_pred, x2)                         # DECODED PREDICTION
 
-    loss_rec = base_loss(x1_rec, x1) + base_loss(x2_rec, x2)  # AE RECONSTRUCTION LOSS
-    loss_lin = base_loss(z2_pred, z2)  # LATENT LINEAR DMD LOSS
-    loss_pred = base_loss(x2_pred, x2)  # FINAL PREDICTION LOSS
+    inv_scale = 1.0 / max(float(scale), 1e-12)
 
-    inv_scale = 1.0 / max(float(scale), 1e-12)  # GUARD DIV0
-
-    loss_total = inv_scale * (  # TOTAL LOSS, SCALE-NORMALISED
-        alpha_rec * loss_rec  # ADD RECONSTRUCTION
-        + alpha_lin * loss_lin  # ADD LATENT LINEARITY
-        + alpha_pred * loss_pred  # ADD FINAL PREDICTION
+    loss_total = inv_scale * (
+        alpha_rec * loss_rec
+        + alpha_lin * loss_lin
+        + alpha_pred * loss_pred
     )
 
-    loss_info = {  # DICTIONARY FOR PRINTING
-        "total": float(loss_total.detach().cpu()),  # TOTAL LOSS
-        "rec": float(loss_rec.detach().cpu()),  # RECONSTRUCTION LOSS (RAW, NOT SCALE-NORMALISED)
-        "lin": float(loss_lin.detach().cpu()),  # LATENT LINEAR LOSS (RAW)
-        "pred": float(loss_pred.detach().cpu()),  # PREDICTION LOSS (RAW)
-        "scale": float(scale),  # WHAT WE DIVIDED BY
+    loss_info = {
+        "total": float(loss_total.detach().cpu()),
+        "rec": float(loss_rec.detach().cpu()),
+        "lin": float(loss_lin.detach().cpu()),
+        "pred": float(loss_pred.detach().cpu()),
+        "scale": float(scale),
     }
 
-    return loss_total, loss_info  # RETURN LOSS AND INFO
+    return loss_total, loss_info

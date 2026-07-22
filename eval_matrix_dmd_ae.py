@@ -12,7 +12,6 @@ from utils import to_tensor  # HELPER
 import defines as D  # DEFAULT FOR log_scale
 
 # ============================== LOSS CURVE ===================================
-
 def save_loss_curve(  # SAVE LOSS
     losses: list[float],
     out_png: str | Path,
@@ -99,7 +98,6 @@ def _alive_row_mask(X: np.ndarray, escape_r: float) -> np.ndarray:  # PER-ROW HE
 
 
 def _exact_trained_row_mask(td) -> np.ndarray:  # EXACT ROW MASK OVER td.X, MATCHING X1/X2 MEMBERSHIP
-
     meta = getattr(td, "meta", None) or {}  # META DICT
     alive_grid = meta.get("alive_mask_grid", None)  # (H,W) BOOL, PER GRID POINT
     T = meta.get("max_iters", None)  # HOW MANY STORED TIME STEPS
@@ -429,15 +427,15 @@ def save_ground_truth_escape_iters(td, escape_r: float, out_png: str | Path) -> 
     r2 = float(escape_r) * float(escape_r)  # R2
 
     zr = td.X_grid[:, :, :, 0:d]  # ALL RE
-    zi = td.X_grid[:, :, :, d:2 * d]  # ALL IM
-    comp_mag2 = zr * zr + zi * zi  # MAG2
-    max_mag2 = np.max(comp_mag2, axis=-1)  # MAX OVER COMPONENTS
-    escaped = max_mag2 >= r2  # ESCAPED AFTER CLAMP TOO
+    zi = td.X_grid[:, :, :, d:2 * d]
+    comp_mag2 = zr * zr + zi * zi
+    max_mag2 = np.max(comp_mag2, axis=-1)
+    escaped = max_mag2 >= r2
 
-    first_escape = np.argmax(escaped, axis=0).astype(np.int32) + 1  # FIRST ESC
-    never_escaped = ~np.any(escaped, axis=0)  # NEVER ESC
-    first_escape[never_escaped] = T  # STABLE
+    first_escape = np.argmax(escaped, axis=0).astype(np.int32) + 1
+    never_escaped = ~np.any(escaped, axis=0)
+    first_escape[never_escaped] = T
 
     img = (255.0 * (1.0 - first_escape.astype(np.float32) / float(T))).clip(0, 255).astype(np.uint8)  # GRAY
-    Image.fromarray(img, mode="L").save(out_png)  # SAVE
-    return str(out_png)  # RETURN
+    Image.fromarray(img, mode="L").save(out_png)
+    return str(out_png)

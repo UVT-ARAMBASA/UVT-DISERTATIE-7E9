@@ -57,9 +57,6 @@ def reconstruct_mandelbrot(  # RECON SET
     P = int(C.shape[0])  # COUNT
     r2 = float(escape_r) * float(escape_r)  # R^2
 
-    # IMPORTANT:
-    # TRAINING STORES x1..xT, NOT x0
-    # WITH z0 = 0, THE FIRST STORED STATE IS x1 = c REPEATED IN ALL COMPONENTS
     X = np.zeros((P, feat_dim), dtype=np.float32)  # INIT FULL
     X[:, 0:state_dim] = C[:, 0:1].astype(np.float32)  # x1 RE IN ALL COMPONENTS
     X[:, state_dim:2 * state_dim] = C[:, 1:2].astype(np.float32)  # x1 IM IN ALL COMPONENTS
@@ -181,6 +178,9 @@ def reconstruct_final_snapshot(  # FINAL STATE IMAGE
 ) -> np.ndarray:  # (H,W,2*D)
     P = int(C.shape[0])  # COUNT
 
+    # IMPORTANT:
+    # TRAINING STORES x1, x2, ..., xT  # NOT x0
+    # x1 CORRESPONDS TO z1 = c (REPEATED IN ALL COMPONENTS) WHEN z0 = 0
     X = np.zeros((P, feat_dim), dtype=np.float32)  # INIT FULL
     X[:, 0:state_dim] = C[:, 0:1].astype(np.float32)  # x1 REAL PART IN ALL COMPONENTS
     X[:, state_dim:2 * state_dim] = C[:, 1:2].astype(np.float32)  # x1 IMAG PART IN ALL COMPONENTS
@@ -234,7 +234,6 @@ def reconstruct_final_snapshot(  # FINAL STATE IMAGE
 
 # ======================= NEW: FLAG OUT-OF-DOMAIN PIXELS =======================
 def _tint_dead_pixels(img_l: np.ndarray, alive_mask: np.ndarray) -> Image.Image:  # GRAY -> RGB, DEAD PIXELS TINTED
-
     alive_mask = np.asarray(alive_mask, dtype=bool)  # BOOL
     if alive_mask.shape != img_l.shape:  # SANITY
         raise ValueError(f"alive_mask SHAPE {alive_mask.shape} != IMAGE SHAPE {img_l.shape}")  # ERROR
@@ -252,7 +251,6 @@ def save_final_snapshot_image(  # SAVE FINAL PNG
     out_png: str | Path,  # PATH
     mode: str = "mag",  # "mag" OR "angle" OR "mask"
     alive_mask: np.ndarray | None = None,  # NEW: (H,W) BOOL -- WHERE THE MODEL IS ACTUALLY IN-DOMAIN.
-    
 ) -> str:
     out_png = Path(out_png)  # PATH
     out_png.parent.mkdir(parents=True, exist_ok=True)  # MKDIR

@@ -1,18 +1,19 @@
-import torch  # TORCH IMPORT
-import torch.nn as nn  # NN MODULE
+import torch
+import torch.nn as nn
 
-class Decoder(nn.Module):  # DECODER CLASS
-    def __init__(self, latent_dim, output_dim):  # INIT DECODER
-        super().__init__()  # CALL SUPER
-        self.net = nn.Sequential(  # SEQ MODULE
-            nn.Linear(latent_dim, 128),  # LINEAR LAYER
-            nn.LeakyReLU(0.1),  # ACTIVATION
-            nn.Linear(128, 256),  # LINEAR LAYER
-            nn.LeakyReLU(0.1),  # ACTIVATION
-            nn.Linear(256, 512),  # LINEAR LAYER
-            nn.LeakyReLU(0.1),  # ACTIVATION
-            nn.Linear(512, output_dim)  # OUTPUT LAYER
+class Decoder(nn.Module):
+    def __init__(self, latent_dim, output_dim):
+        super().__init__()
+        # DECODER MLP: LATENT -> 128 -> 256 -> 512 -> (2d+2) STATE  (MIRRORS ENCODER)
+        self.net = nn.Sequential(
+            nn.Linear(latent_dim, 128),
+            nn.LeakyReLU(0.1),
+            nn.Linear(128, 256),
+            nn.LeakyReLU(0.1),
+            nn.Linear(256, 512),
+            nn.LeakyReLU(0.1),
+            nn.Linear(512, output_dim)
         )
 
-    def forward(self, z):  # FORWARD PASS
-        return self.net(z)  # RETURN RECONSTRUCTION
+    def forward(self, z):
+        return self.net(z)

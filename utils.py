@@ -28,15 +28,11 @@ def load_model(model: torch.nn.Module, path: str | os.PathLike[str], device: tor
 
 
 # #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=#  #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=#
-#  Matplotlib helpers
+#  MATPLOTLIB STUFF
 #  #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=# #=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=~=#
 
 
 def set_recommended_matplotlib() -> None:
-    """Apply the plotting defaults used in `quadratic-network.py`.
-
-    If matplotlib is not available, return quietly.
-    """
     try:
         import matplotlib.pyplot as mp
     except Exception:
@@ -76,7 +72,6 @@ def set_recommended_matplotlib() -> None:
 
 @contextmanager
 def axis(filename: str | os.PathLike[str]) -> Iterator[Any]:
-    """Context manager that returns an axis and always saves the figure."""
     import matplotlib.pyplot as mp
 
     filename = Path(filename)
@@ -99,7 +94,6 @@ from pathlib import Path
 import numpy as np
 
 def _to_u8(img: np.ndarray) -> np.ndarray:
-    """Map {0,1} or float array to uint8 [0..255]."""
     a = np.asarray(img)
     if a.dtype == np.uint8:
         return a
@@ -131,7 +125,6 @@ def save_gray_png(img: np.ndarray, path) -> str:
     return path
 
 def show_image(path: str) -> None:
-    """Open image in OS viewer (works fine from PyCharm run)."""
     from PIL import Image
     Image.open(path).show()
 

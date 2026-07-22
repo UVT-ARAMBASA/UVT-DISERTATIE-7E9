@@ -34,7 +34,6 @@ from experiment_common import (  # COMMON
     debug_final_state_stats,
 )
 
-
 # ============================= SINGLE MATRIX RUN ============================
 def run_single_matrix(device: torch.device | None = None) -> None:  # RUN SINGLE EXPERIMENT
     if device is None:  # AUTO DEVICE
@@ -50,14 +49,8 @@ def run_single_matrix(device: torch.device | None = None) -> None:  # RUN SINGLE
     # ------------------------------- BUILD DATA -----------------------------
     A = load_one_A_matrix(D.A_DATA_DIR, source=D.SINGLE_MATRIX_SOURCE, index=D.SINGLE_MATRIX_INDEX)  # TRUE MATRIX
 
-    # NEW: PRINT fikl's PRINCIPLED, MATRIX-DEPENDENT ESCAPE RADIUS NEXT TO THE
-    # FIXED D.ESCAPE_R WE ACTUALLY CLASSIFY WITH -- SEE THE NOTE IN defines.py.
-    # PURELY INFORMATIONAL, DOESN'T CHANGE ANY BEHAVIOUR.
     try:
-        principled_r = determine_escape_radius(A)  # fikl's FORMULA FOR THIS MATRIX
-        print(f"[INFO] fixed classify_r=D.ESCAPE_R={D.ESCAPE_R:g}  vs.  "
-              f"fikl's determine_escape_radius(A)={principled_r:.6g} "
-              f"(THEY DON'T HAVE TO MATCH -- SEE defines.py)")  # LOG, INFORMATIONAL ONLY
+        principled_r = determine_escape_radius(A)
     except Exception as exc:  # DON'T LET A DIAGNOSTIC PRINT BREAK THE RUN
         print(f"[INFO] determine_escape_radius(A) failed (non-fatal): {exc}")  # LOG
 
@@ -74,7 +67,7 @@ def run_single_matrix(device: torch.device | None = None) -> None:  # RUN SINGLE
         max_iters=D.TRAIN_MAX_ITERS,  # ITERS
         escape_r=D.DYNAMICS_CLAMP_R,  # NUMERICAL CLAMP DURING ITERATION (NOT THE CLASSIFY THRESHOLD)
         classify_r=D.ESCAPE_R,  # "ESCAPED" THRESHOLD USED ONLY TO DECIDE WHAT'S ALIVE FOR TRAINING
-        filter_escaped=D.FILTER_ESCAPED_FOR_TRAINING,  # DROP ESCAPED TRAJECTORIES FROM X1/X2 (fikl's PRACTICE)
+        filter_escaped=D.FILTER_ESCAPED_FOR_TRAINING,
         keep_escaped_fraction=D.KEEP_ESCAPED_FRACTION,  # EXPERIMENTAL, 0.0 = OFF (SEE defines.py)
     )
 
@@ -98,7 +91,6 @@ def run_single_matrix(device: torch.device | None = None) -> None:  # RUN SINGLE
         lr=D.AE_LR,  # LR
         device=device,  # DEVICE
     )
-
 
     has_val = bool(np.any(np.isfinite(val_losses))) if len(val_losses) else False  # ANYTHING TO OVERLAY?
     save_loss_curve(
@@ -133,7 +125,6 @@ def run_single_matrix(device: torch.device | None = None) -> None:  # RUN SINGLE
                                mode="mag", alive_mask=alive_grid)  # RECON MAG
 
     # ------------------------------- PREDICTION -----------------------------
-    # THEN PREDICT THE NEXT PREDICT_EXTRA_STEPS STEP(S) STARTING FROM THE TRUE xT
     k = int(D.PREDICT_EXTRA_STEPS)  # HOW MANY STEPS AHEAD
 
     Z_pred = predict_next_snapshot(td, enc, dec, dmd, device, steps=k, escape_r=D.DYNAMICS_CLAMP_R)  # MODEL x_{T+k}
@@ -164,8 +155,7 @@ def run_single_matrix(device: torch.device | None = None) -> None:  # RUN SINGLE
     d_state = int((int(td.X_grid.shape[-1]) - 2) // 2)  # td.X_grid HAS +2 C CHANNELS, rollout DOES NOT
 
     Z_pred_final = rollout[-1]  # (H,W,2d)
-    Z_true_final = td.X_grid[-1][..., :2 * d_state]  # DROP TRAILING C SO SHAPES MATCH
-
+    Z_true_final = td.X_grid[-1][..., :2 * d_state]
     save_final_snapshot_image(Z_pred_final, escape_r=D.ESCAPE_R,
                               out_png=dirs["res"] / "rollout_from_start_final_mask.png",
                               mode="mask", alive_mask=alive_grid)
@@ -176,7 +166,7 @@ def run_single_matrix(device: torch.device | None = None) -> None:  # RUN SINGLE
     rollout_final_m = next_step_prediction_metrics(Z_pred_final, Z_true_final)
     print_metric_block(f"SINGLE MATRIX AE+DMD ROLLOUT x1 -> x{maxit} (MACRO, FULL GRID)", rollout_final_m)
 
-    # ----
+    # ---- SAME TEST, RESTRICTED TO PIXELS TH MODEL WAS ACT. TRAINED ON
     rollout_final_m_alive = None  # DEFAULT
     if alive_grid is not None and bool(np.any(alive_grid)):  # HAVE A USEFUL MASK
         rollout_final_m_alive = next_step_prediction_metrics(

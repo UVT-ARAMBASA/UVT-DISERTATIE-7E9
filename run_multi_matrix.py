@@ -75,7 +75,7 @@ def run_multi_matrix(device: torch.device | None = None) -> None:  # RUN MULTI E
         max_iters=D.TRAIN_MAX_ITERS,
         escape_r=D.DYNAMICS_CLAMP_R,  # NUMERICAL CLAMP DURING ITERATION (NOT THE CLASSIFY THRESHOLD)
         classify_r=D.ESCAPE_R,  # "ESCAPED" THRESHOLD USED ONLY TO DECIDE WHAT'S ALIVE FOR TRAINING
-        filter_escaped=D.FILTER_ESCAPED_FOR_TRAINING,  # DROP ESCAPED TRAJECTORIES FROM X1/X2 (fikl's PRACTICE)
+        filter_escaped=D.FILTER_ESCAPED_FOR_TRAINING,  # DROP ESCAPED TRAJECTORIES FROM X1/X2
     )
 
     for i, td in enumerate(td_train_list):  # ONE GT IMAGE PER TRAIN MATRIX (WAS: ONLY INDEX 0)
@@ -104,8 +104,6 @@ def run_multi_matrix(device: torch.device | None = None) -> None:  # RUN MULTI E
         device=device,
     )
 
-    # NOTE: save_loss_curve NOW DEFAULTS TO log-scale AND CAN OVERLAY THE
-    # VALIDATION CURVE -- SEE eval_matrix_dmd_ae.py / defines.py.
     has_val = bool(np.any(np.isfinite(val_losses))) if len(val_losses) else False  # ANYTHING TO OVERLAY?
     save_loss_curve(
         losses, dirs["res"] / "loss_curve.png", "Multi-Matrix AE Loss",
@@ -124,7 +122,29 @@ def run_multi_matrix(device: torch.device | None = None) -> None:  # RUN MULTI E
     dmd = fit_streamed_dmd_from_td_list(enc, td_train_list, device)  # FIT ONE SHARED LATENT DMD
     rho = float(np.max(np.abs(np.linalg.eigvals(dmd.A.detach().cpu().numpy()))))  # SPECTRAL RADIUS
     print("MULTI DMD SPECTRAL RADIUS:", rho)  # PRINT
+    # ---------------------- TRAIN-SET SANITY CHECK --------------------
+    ae_train_metrics_all, dmd_train_metrics_all = [], []
+    for i, td in enumerate(td_train_list):
+        ae_tr = autoencoder_reconstruction_metrics_alive(enc, dec, td, device)
+        dmd_tr = dmd_one_step_metrics(enc, dec, dmd, td.X1, td.X2, device)
+        ae_train_metrics_all.append(ae_tr)
+        dmd_train_metrics_all.append(dmd_tr)
+        print_metric_block(f"TRAIN MATRIX {int(train_idx[i])} AE (RECON, ALIVE-ONLY)", ae_tr)
+        print_metric_block(f"TRAIN MATRIX {int(train_idx[i])} DMD (ONE-STEP)", dmd_tr)
 
+    mean_ae_train = mean_metric_dict(ae_train_metrics_all)
+    mean_dmd_train = mean_metric_dict(dmd_train_metrics_all)
+    print_metric_block("MEAN TRAIN AE (RECON, ALIVE-ONLY)", mean_ae_train)
+    print_metric_block("MEAN TRAIN DMD (ONE-STEP)", mean_dmd_train)
+    write_metrics_txt(
+        dirs["res"] / "mean_train_metrics.txt",
+        {
+            **{f"train_{k2}": v for k2, v in mean_ae_train.items()},
+            **{f"train_{k2}": v for k2, v in mean_dmd_train.items()},
+            "n_train_matrices": float(len(td_train_list)),
+        },
+    )
+    # ------------------------------------------------------------------------
     # ------------------------------- TEST DATA ------------------------------
     td_test_list = build_matrix_c_grid_training_data_many_matrices(  # BUILD TEST DATA (8 HELD-OUT)
         data_dir=D.A_DATA_DIR,
@@ -139,7 +159,7 @@ def run_multi_matrix(device: torch.device | None = None) -> None:  # RUN MULTI E
         max_iters=D.TRAIN_MAX_ITERS,
         escape_r=D.DYNAMICS_CLAMP_R,  # NUMERICAL CLAMP DURING ITERATION (NOT THE CLASSIFY THRESHOLD)
         classify_r=D.ESCAPE_R,  # "ESCAPED" THRESHOLD USED ONLY TO DECIDE WHAT'S ALIVE FOR TRAINING
-        filter_escaped=D.FILTER_ESCAPED_FOR_TRAINING,  # DROP ESCAPED TRAJECTORIES FROM X1/X2 (fikl's PRACTICE)
+        filter_escaped=D.FILTER_ESCAPED_FOR_TRAINING,  # DROP ESCAPED TRAJECTORIES FROM X1/X2
     )
 
     k = int(D.PREDICT_EXTRA_STEPS)  # STEPS AHEAD
@@ -147,7 +167,7 @@ def run_multi_matrix(device: torch.device | None = None) -> None:  # RUN MULTI E
     ae_alive_metrics_all = []  # NEW: STORE AE METRICS (ALIVE-ONLY)
     dmd_metrics_all = []  # STORE DMD ONE-STEP METRICS
     pred_metrics_all = []  # STORE NEXT-STEP PREDICTION METRICS (FULL GRID)
-    pred_alive_metrics_all = []  # NEW: STORE NEXT-STEP PREDICTION METRICS (ALIVE-ONLY)
+    pred_alive_metrics_all = []  # STORE NEXT-STEP PREDICTION METRICS (ALIVE-ONLY)
 
     maxit = int(D.TRAIN_MAX_ITERS)  # T
     n_check = min(int(getattr(D, "PREDICT_ROLLOUT_CHECK_STEPS", 10)), max(maxit - 1, 0))  # HOW MANY STEPS TO CHECK
@@ -159,7 +179,6 @@ def run_multi_matrix(device: torch.device | None = None) -> None:  # RUN MULTI E
     for j, td_test in enumerate(td_test_list):  # LOOP HELD-OUT TEST MATRICES
         A_test = A_all[int(test_idx[j])]  # TRUE MATRIX FOR THIS TEST CASE
         alive_grid = td_test.meta.get("alive_mask_grid", None)  # (H,W) BOOL -- WHERE THE MODEL IS IN-DOMAIN
-
 
         ae_m = autoencoder_reconstruction_metrics(enc, dec, td_test.X, device)  # RECON METRICS, FULL GRID (DIAGNOSTIC)
         ae_m_alive = autoencoder_reconstruction_metrics_alive(enc, dec, td_test, device)  # NEW
@@ -229,7 +248,6 @@ def run_multi_matrix(device: torch.device | None = None) -> None:  # RUN MULTI E
             save_ground_truth_final_mask(td_test, D.ESCAPE_R, dirs["res"] / "test_gt_final_mask.png", scale=D.IMAGE_SCALE)  # GT MASK
             save_ground_truth_escape_iters(td_test, D.ESCAPE_R, dirs["res"] / "test_gt_escape_iters.png")  # GT FRACTAL
 
-
             Z_recon = reconstruct_true_final_snapshot(td_test, enc, dec, device)  # RECON xT
             save_final_snapshot_image(Z_recon, escape_r=D.ESCAPE_R, out_png=dirs["res"] / "test_recon_final_mask.png",
                                        mode="mask", alive_mask=alive_grid)  # RECON MASK
@@ -247,8 +265,7 @@ def run_multi_matrix(device: torch.device | None = None) -> None:  # RUN MULTI E
             save_escape_image(iters_pred, max_iters=int(td_test.X_grid.shape[0]), out_png=dirs["res"] / "test_pred_escape_iters.png",
                                alive_mask=alive_grid)  # SAVE FRACTAL
 
-            # NEW: ROLLOUT-FROM-START VISUAL (STARTS FROM TRUE x1, ONLY EVER
-            # FEEDS BACK ITS OWN PREDICTIONS -- COMPARE VS test_gt_final_mask.png)
+            # NEW: ROLLOUT-FROM-START VISUAL
             save_final_snapshot_image(Z_pred_final, escape_r=D.ESCAPE_R,
                                        out_png=dirs["res"] / "test_rollout_from_start_final_mask.png",
                                        mode="mask", alive_mask=alive_grid)  # ROLLOUT MASK
@@ -279,7 +296,6 @@ def run_multi_matrix(device: torch.device | None = None) -> None:  # RUN MULTI E
         mean_rollout_final_alive_raw = mean_metric_dict(rollout_final_alive_metrics_all)  # MEAN
         print_metric_block(f"MEAN TEST AE+DMD ROLLOUT x1 -> x{maxit} (MACRO, ALIVE-ONLY)", mean_rollout_final_alive_raw)  # PRINT
         mean_rollout_final_alive = {f"rollout_final_alive_{key}": val for key, val in mean_rollout_final_alive_raw.items()}  # PREFIX
-
 
     rollout_step_metrics: dict[str, float] = {}  # FOR mean_test_metrics.txt
     mean_step_curve: list[float] = []  # FOR THE PLOT

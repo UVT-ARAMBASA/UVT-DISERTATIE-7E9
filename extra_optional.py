@@ -477,7 +477,9 @@ def teacher_forced_escape_iters_ae_predictor(td, encoder, decoder, device, escap
 
 
 # ============================= DMD ONLY HELPERS =============================
-def fit_full_state_dmd_streamed(X1, X2, *, device: torch.device):  # FIT RAW DMD WITHOUT AE
+def fit_full_state_dmd_streamed(X1, X2, *, device: torch.device, ridge: float | None = None):  # FIT RAW DMD WITHOUT AE
+    if ridge is None:  # DEFAULT TO defines.DMD_RIDGE -- PREVIOUSLY IGNORED ENTIRELY
+        ridge = D.DMD_RIDGE
     X1_list = [X1] if isinstance(X1, np.ndarray) else list(X1)  # WRAP
     X2_list = [X2] if isinstance(X2, np.ndarray) else list(X2)  # WRAP
 
@@ -494,7 +496,7 @@ def fit_full_state_dmd_streamed(X1, X2, *, device: torch.device):  # FIT RAW DMD
         G += A.T @ A  # ACCUMULATE
         H += A.T @ B  # ACCUMULATE
 
-    return fit_dmd_from_latent_covariances(G, H, device=device)  # SAME FORMULA, FULL STATE
+    return fit_dmd_from_latent_covariances(G, H, device=device, ridge=ridge)  # SAME FORMULA, FULL STATEE
 
 
 @torch.no_grad()  # NO GRAD
@@ -576,7 +578,7 @@ def _build_single_td(train_clip_r: float | None = None):  # BUILD SINGLE MATRIX 
         max_iters=D.TRAIN_MAX_ITERS,  # ITERS
         escape_r=clip_r,  # TRAIN CLIP, NOT FINAL ESCAPE THRESHOLD
         classify_r=D.ESCAPE_R,  # "ESCAPED" THRESHOLD USED ONLY TO DECIDE WHAT'S ALIVE FOR TRAINING
-        filter_escaped=D.FILTER_ESCAPED_FOR_TRAINING,  # DROP ESCAPED TRAJECTORIES FROM X1/X2 (fikl's PRACTICE)
+        filter_escaped=D.FILTER_ESCAPED_FOR_TRAINING,  # DROP ESCAPED TRAJECTORIES FROM X1/X2
     )
 
 
@@ -696,16 +698,7 @@ def run_ae_only_single(device: torch.device) -> None:  # RUN AE-ONLY ON ONE MATR
         all_metrics[f"pred_rel_l2_xn_plus_{step:03d}"] = float(pred_m["pred_rel_l2"])  # SAVE REL
         all_metrics[f"pred_fit_xn_plus_{step:03d}"] = float(pred_m["pred_fit"])  # SAVE FIT
 
-    # ============================================================
-    # NEW, SERIOUS TESTS: ROLL THE AE FORWARD FROM x1 (TRUE z0=0 ANCHOR)
-    # THROUGH THE KNOWN TRAJECTORY, SO EVERY STEP HAS A REAL x_t TO CHECK
-    # AGAINST -- NO ORACLE NEEDED.
-    # BUG FIX: THIS BLOCK USED TO LIVE *INSIDE* `for s in range(k):` ABOVE,
-    # EVEN THOUGH IT DOESN'T DEPEND ON s/step AT ALL -- WITH THE DEFAULT
-    # PREDICT_EXTRA_STEPS=1 IT ONLY RAN ONCE ANYWAY SO IT NEVER SHOWED UP AS
-    # A CRASH, BUT IT WOULD SILENTLY RE-RUN (AND RE-WRITE THE SAME FILES)
-    # ONCE PER STEP IF k>1. DE-INDENTED TO RUN EXACTLY ONCE, AFTER THE LOOP.
-    # ============================================================
+
     maxit = int(D.TRAIN_MAX_ITERS)  # T
     rollout = predict_rollout_from_start_ae_predictor(  # ONE ROLLOUT SERVES BOTH TESTS BELOW
         td, enc, dec, device, steps=maxit, escape_r=D.DYNAMICS_CLAMP_R,  # NUMERICAL CLAMP, MATCHES DATA BUILDER
@@ -752,9 +745,6 @@ def run_ae_only_single(device: torch.device) -> None:  # RUN AE-ONLY ON ONE MATR
         all_metrics[f"rollout_rel_l2_step_{s + 1:03d}"] = float(m_s["pred_rel_l2"])  # SAVE
         rollout_rel_l2.append(float(m_s["pred_rel_l2"]))  # COLLECT
 
-        # SAME REASONING AS run_single_matrix.py: WITHOUT THIS, THE CURVE
-        # CONFLATES "ERROR COMPOUNDS OVER STEPS" WITH "MOST OF THE GRID IS
-        # ESCAPED AND THE MODEL WAS NEVER TRAINED ON IT".
         if alive_grid is not None and bool(np.any(alive_grid)):  # HAVE A USEFUL MASK
             m_s_alive = next_step_prediction_metrics(Z_pred_s[alive_grid], Z_true_s[alive_grid])
             print_metric_block(f"AE ROLLOUT FROM x1, {s + 1} STEP(S) IN (x{true_iter}, ALIVE-ONLY)", m_s_alive)
@@ -796,10 +786,7 @@ def run_ae_only_multi(device: torch.device) -> None:  # RUN AE-ONLY ON MANY MATR
         device=device,
     )
     if bool(getattr(D, "AE_USE_QUADRATIC_PREDICTOR", False)):  # TOGGLE IN defines.py
-        # ALL MATRICES IN THE BANK SHARE state_dim (SAME PARCELLATION), SO
-        # ANY td IN THE LIST GIVES THE RIGHT SIZE -- BUT UNLIKE run_ae_only_single
-        # THERE'S NO SINGLE "TRUE A" TO COMPARE THE LEARNED ONE AGAINST, SO
-        # WE SKIP plot_learned_vs_true_matrix_spectrum HERE.
+
         state_dim = int(td_train_list[0].meta["state_dim"])  # d
         q_enc, q_dec = make_quadratic_predictor_pair(  # BUILD (encoder, decoder) PAIR
             state_dim, rank=getattr(D, "AE_QUADRATIC_RANK", None),
@@ -818,13 +805,6 @@ def run_ae_only_multi(device: torch.device) -> None:  # RUN AE-ONLY ON MANY MATR
     metric_list = []  # STORE ONE-STEP METRICS
     pred_metric_list = []  # STORE NEXT-STEP METRICS
 
-    # ============================================================
-    # NEW: THE SAME "SERIOUS" TEST ALEX'S EMAIL ASKED FOR (SEE
-    # predict_rollout_from_start_ae_predictor / run_ae_only_single ABOVE),
-    # NOW ALSO FOR THE HELD-OUT TEST MATRICES HERE. run_ae_only_single ALREADY
-    # HAD THIS; run_ae_only_multi DID NOT -- IT ONLY EVER DID THE ONE-STEP/
-    # NEXT-STEP-FROM-TRUE-xT STYLE TEST HE SPECIFICALLY FLAGGED AS NOT SERIOUS.
-    # ============================================================
     maxit = int(D.TRAIN_MAX_ITERS)  # T
     n_check = min(int(getattr(D, "PREDICT_ROLLOUT_CHECK_STEPS", 10)), max(maxit - 1, 0))  # HOW MANY STEPS TO CHECK
     rollout_final_metrics_all = []  # TEST 1 (MACRO), FULL GRID, PER TEST MATRIX
@@ -881,17 +861,11 @@ def run_ae_only_multi(device: torch.device) -> None:  # RUN AE-ONLY ON MANY MATR
         rollout_step_curves_all.append(step_curve)  # STORE THIS MATRIX'S CURVE
         if step_curve_alive:  # ONLY IF WE HAD A USABLE MASK
             rollout_step_curves_alive_all.append(step_curve_alive)  # STORE
-        # ---------------------------------------------------------------------
 
         if j == 0:  # SAVE FIRST TEST VISUALS (GT + RECON + PRED + TRUE NEXT)
             save_ground_truth_final_mask(td_test, D.ESCAPE_R, dirs["res"] / "test_gt_final_mask.png", scale=D.IMAGE_SCALE)  # GT MASK
             save_ground_truth_escape_iters(td_test, D.ESCAPE_R, dirs["res"] / "test_gt_escape_iters.png")  # GT FRACTAL
 
-            # RECON/PRED ARE MODEL OUTPUT ON THE (POSSIBLY OUT-OF-DOMAIN) FULL
-            # GRID -- FLAG THE OUT-OF-DOMAIN PIXELS INSTEAD OF LETTING THEM
-            # LOOK LIKE RECONSTRUCTED FRACTAL STRUCTURE (SAME TREATMENT AS
-            # run_single_matrix.py / run_multi_matrix.py). TRUE NEXT IS GROUND
-            # TRUTH, ALWAYS MEANINGFUL -- NO alive_mask.
             Z_recon = reconstruct_final_snapshot_ae_only(td_test, enc, dec, device)  # RECON
             save_final_snapshot_image(Z_recon, escape_r=D.ESCAPE_R, out_png=dirs["res"] / "test_recon_final_mask.png",
                                        mode="mask", alive_mask=alive_grid)  # RECON MASK
@@ -904,8 +878,6 @@ def run_ae_only_multi(device: torch.device) -> None:  # RUN AE-ONLY ON MANY MATR
             save_escape_image(iters_test, max_iters=int(td_test.X_grid.shape[0]), out_png=dirs["res"] / "test_pred_escape_iters.png",
                                alive_mask=alive_grid)  # SAVE FRACTAL
 
-            # NEW: ROLLOUT-FROM-START VISUAL (STARTS FROM TRUE x1, ONLY EVER
-            # FEEDS BACK ITS OWN PREDICTIONS -- COMPARE VS test_gt_final_mask.png)
             save_final_snapshot_image(Z_pred_final, escape_r=D.ESCAPE_R,
                                        out_png=dirs["res"] / "test_rollout_from_start_final_mask.png",
                                        mode="mask", alive_mask=alive_grid)  # ROLLOUT MASK
@@ -952,7 +924,6 @@ def run_ae_only_multi(device: torch.device) -> None:  # RUN AE-ONLY ON MANY MATR
             f"AE Rollout Relative L2 Error vs Steps Beyond x1 (Mean Over {len(rollout_step_curves_alive_all)} Test Matrices, Alive-Only)",
             xlabel="Steps beyond x1", ylabel="Relative L2 error", log_scale=False,
         )
-    # ---------------------------------------------------------------------
 
     write_metrics_txt(dirs["res"] / "mean_test_metrics.txt", {
         **mean_m, **mean_pred, "predict_extra_steps": float(k),
